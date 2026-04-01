@@ -1,0 +1,9 @@
+{
+  "name": "farm2home/recently",
+  "description": "A direct-to-consumer marketplace connecting local farmers with fresh produce seekers.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera",
+    "microphone"
+  ]
+}
