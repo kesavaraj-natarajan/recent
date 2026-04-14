@@ -44,17 +44,63 @@ db.exec(`
     farmName TEXT,
     location TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
+  );
+  CREATE TABLE IF NOT EXISTS otps (
+    email TEXT PRIMARY KEY,
+    otp TEXT,
+    expiresAt DATETIME,
+    type TEXT,
+    data TEXT
+  );
+  CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY,
+    email TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    product_name TEXT,
+    total_amount REAL,
+    delivery_method TEXT,
+    status TEXT DEFAULT 'Pending',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+// Migration: Add delivery_method to orders if it doesn't exist
+try {
+  db.prepare("ALTER TABLE orders ADD COLUMN delivery_method TEXT").run();
+  console.log("Added delivery_method column to orders table");
+} catch (e: any) {
+  if (!e.message.includes("duplicate column name")) {
+    console.error("Migration error:", e.message);
+  }
+}
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Email Helper Function
   const sendEmail = async (to: string, subject: string, html: string) => {
+    if (!to) {
+      console.error("Failed to send email: No recipients defined (to address is missing)");
+      return;
+    }
+
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      console.warn(`SMTP credentials missing. Simulating email to ${to}: ${subject}`);
+      console.log("--- SIMULATED EMAIL CONTENT ---");
+      console.log(html.replace(/<[^>]*>?/gm, '')); // Strip HTML for console readability
+      console.log("-------------------------------");
+      return;
+    }
+
     const host = process.env.SMTP_HOST || "smtp.resend.com";
     const port = parseInt(process.env.SMTP_PORT || "587");
     // Force secure: true only for port 465, otherwise false (for STARTTLS on 587)
@@ -62,49 +108,124 @@ async function startServer() {
 
     console.log(`Sending email to ${to} via ${host}:${port} (Secure: ${secure})`);
 
+    // Remove spaces from app passwords (e.g. Google App Passwords)
+    const pass = process.env.SMTP_PASS.replace(/\s+/g, '');
+
     const transporter = nodemailer.createTransport({
       host,
       port,
       secure,
       auth: {
-        user: process.env.SMTP_USER || "resend",
-        pass: process.env.SMTP_PASS,
+        user: process.env.SMTP_USER,
+        pass: pass,
       },
       connectionTimeout: 10000, // 10 seconds
       greetingTimeout: 10000,
       socketTimeout: 10000,
     });
 
-    return transporter.sendMail({
-      from: `"Farm2Home" <${process.env.EMAIL_FROM || "onboarding@resend.dev"}>`,
-      to,
-      subject,
-      html,
-    });
+    try {
+      const info = await transporter.sendMail({
+        from: `"Farm2Home" <${process.env.EMAIL_FROM || "onboarding@resend.dev"}>`,
+        to,
+        subject,
+        html,
+      });
+      console.log("Email sent successfully:", info.messageId);
+      return info;
+    } catch (error) {
+      console.error("Failed to send email:", error);
+      throw error;
+    }
   };
 
   // Auth API Routes
   app.post("/api/auth/register", async (req, res) => {
     const { email, password, name, role, phone, address, farmName, location } = req.body;
-    const id = Math.random().toString(36).substring(7);
+    
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
 
     try {
+      // Check if user already exists
+      const existingUser = db.prepare("SELECT email FROM users WHERE email = ?").get(email);
+      if (existingUser) {
+        return res.status(400).json({ error: "Email already exists" });
+      }
+
+      const otp = Math.floor(1000 + Math.random() * 9000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
+      const data = JSON.stringify({ password, name, role, phone, address, farmName, location });
+
+      const stmt = db.prepare(`
+        INSERT INTO otps (email, otp, expiresAt, type, data)
+        VALUES (?, ?, ?, 'register', ?)
+        ON CONFLICT(email) DO UPDATE SET otp = excluded.otp, expiresAt = excluded.expiresAt, type = excluded.type, data = excluded.data
+      `);
+      stmt.run(email, otp, expiresAt, data);
+
+      // Send OTP Email
+      await sendEmail(email, "Your Farm2Home Verification Code 🌿", `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+          <h2 style="color: #5A5A40;">Welcome to Farm2Home!</h2>
+          <p>Hi ${name},</p>
+          <p>Please use the following 4-digit code to verify your email address and complete your registration:</p>
+          <div style="background: #f0f0f0; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 10px; color: #5A5A40;">${otp}</span>
+          </div>
+          <p>This code will expire in 10 minutes.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+          <p style="font-size: 12px; color: #666;">This is an automated message. Please do not reply.</p>
+        </div>
+      `);
+
+      res.json({ success: true, message: "OTP sent to email", requireOtp: true });
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      res.status(500).json({ error: "Failed to process registration" });
+    }
+  });
+
+  app.post("/api/auth/verify-register", async (req, res) => {
+    const { email, otp } = req.body;
+    
+    try {
+      const otpRecord = db.prepare("SELECT * FROM otps WHERE email = ? AND type = 'register'").get(email) as any;
+      
+      if (!otpRecord) {
+        return res.status(400).json({ error: "No pending registration found" });
+      }
+
+      if (otpRecord.otp !== otp) {
+        return res.status(400).json({ error: "Invalid OTP" });
+      }
+
+      if (new Date(otpRecord.expiresAt) < new Date()) {
+        return res.status(400).json({ error: "OTP has expired" });
+      }
+
+      const data = JSON.parse(otpRecord.data);
+      const id = Math.random().toString(36).substring(7);
+
       const stmt = db.prepare(`
         INSERT INTO users (id, email, password, name, role, phone, address, farmName, location)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      stmt.run(id, email, password, name, role, phone, address, farmName, location);
+      stmt.run(id, email, data.password, data.name, data.role, data.phone, data.address, data.farmName, data.location);
       
-      const user = { id, email, name, role, phone, address, farmName, location };
+      // Delete OTP record
+      db.prepare("DELETE FROM otps WHERE email = ? AND type = 'register'").run(email);
 
-      // Send Welcome/Verification Email
+      const user = { id, email, name: data.name, role: data.role, phone: data.phone, address: data.address, farmName: data.farmName, location: data.location };
+
+      // Send Welcome Email
       sendEmail(email, "Welcome to Farm2Home! 🌿", `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #5A5A40;">Welcome to Farm2Home, ${name}!</h2>
-          <p>Thank you for joining our community of fresh produce lovers.</p>
+          <h2 style="color: #5A5A40;">Registration Successful, ${data.name}!</h2>
           <p>Your account has been successfully created. You can now start shopping for fresh, local harvest directly from farmers.</p>
           <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Role:</strong> ${role === 'farmer' ? 'Farmer' : 'Consumer'}</p>
+            <p style="margin: 0;"><strong>Role:</strong> ${data.role === 'farmer' ? 'Farmer' : 'Consumer'}</p>
             <p style="margin: 5px 0 0 0;"><strong>Email:</strong> ${email}</p>
           </div>
           <p>Happy harvesting!</p>
@@ -157,21 +278,30 @@ async function startServer() {
   app.post("/api/auth/reset-password-request", async (req, res) => {
     const { email } = req.body;
     try {
-      const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+      const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
       if (!user) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const resetToken = Math.random().toString(36).substring(2, 15);
+      const otp = Math.floor(1000 + Math.random() * 9000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
+
+      const stmt = db.prepare(`
+        INSERT INTO otps (email, otp, expiresAt, type, data)
+        VALUES (?, ?, ?, 'reset', '{}')
+        ON CONFLICT(email) DO UPDATE SET otp = excluded.otp, expiresAt = excluded.expiresAt, type = excluded.type, data = excluded.data
+      `);
+      stmt.run(email, otp, expiresAt);
       
       await sendEmail(email, "Password Reset Verification 🔐", `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
           <h2 style="color: #5A5A40;">Password Reset Request</h2>
           <p>Hi ${user.name},</p>
-          <p>We received a request to reset your password. Use the verification code below to proceed:</p>
+          <p>We received a request to reset your password. Use the 4-digit verification code below to proceed:</p>
           <div style="background: #f0f0f0; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
-            <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #5A5A40;">${resetToken.toUpperCase()}</span>
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 10px; color: #5A5A40;">${otp}</span>
           </div>
+          <p>This code will expire in 10 minutes.</p>
           <p>If you didn't request this, you can safely ignore this email.</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
           <p style="font-size: 12px; color: #666;">This is an automated message. Please do not reply.</p>
@@ -185,6 +315,37 @@ async function startServer() {
     }
   });
 
+  app.post("/api/auth/reset-password-verify", async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+    
+    try {
+      const otpRecord = db.prepare("SELECT * FROM otps WHERE email = ? AND type = 'reset'").get(email) as any;
+      
+      if (!otpRecord) {
+        return res.status(400).json({ error: "No pending password reset found" });
+      }
+
+      if (otpRecord.otp !== otp) {
+        return res.status(400).json({ error: "Invalid OTP" });
+      }
+
+      if (new Date(otpRecord.expiresAt) < new Date()) {
+        return res.status(400).json({ error: "OTP has expired" });
+      }
+
+      // Update password
+      db.prepare("UPDATE users SET password = ? WHERE email = ?").run(newPassword, email);
+      
+      // Delete OTP record
+      db.prepare("DELETE FROM otps WHERE email = ? AND type = 'reset'").run(email);
+
+      res.json({ success: true, message: "Password updated successfully" });
+    } catch (error) {
+      console.error("Password reset verify error:", error);
+      res.status(500).json({ error: "Failed to reset password" });
+    }
+  });
+
   // Email API Route
   app.post("/api/send-email", async (req, res) => {
     const { to, subject, text, html } = req.body;
@@ -194,23 +355,6 @@ async function startServer() {
     }
 
     try {
-      // Configure transporter
-      // For production, use real SMTP settings in .env
-      const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST || "smtp.ethereal.email",
-        port: parseInt(process.env.SMTP_PORT || "587"),
-        secure: process.env.SMTP_SECURE === "true",
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-        pool: true,               // Use connection pooling
-        maxConnections: 1,        // Limit connections
-        connectionTimeout: 20000, // 20 seconds
-        greetingTimeout: 20000,   // 20 seconds
-        socketTimeout: 20000,     // 20 seconds
-      });
-
       // Verify connection configuration
       if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
         console.warn("SMTP credentials missing. Email will not be sent.");
@@ -220,6 +364,26 @@ async function startServer() {
           simulated: true 
         });
       }
+
+      // Remove spaces from app passwords (e.g. Google App Passwords)
+      const pass = process.env.SMTP_PASS.replace(/\s+/g, '');
+
+      // Configure transporter
+      // For production, use real SMTP settings in .env
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || "smtp.ethereal.email",
+        port: parseInt(process.env.SMTP_PORT || "587"),
+        secure: process.env.SMTP_SECURE === "true",
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: pass,
+        },
+        pool: true,               // Use connection pooling
+        maxConnections: 1,        // Limit connections
+        connectionTimeout: 20000, // 20 seconds
+        greetingTimeout: 20000,   // 20 seconds
+        socketTimeout: 20000,     // 20 seconds
+      });
 
       console.log(`Attempting to send email via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT} (Secure: ${process.env.SMTP_SECURE})`);
 
@@ -247,60 +411,136 @@ async function startServer() {
   // Supabase Orders API Route
   app.post("/api/orders", async (req, res) => {
     const orderData = req.body;
+    const deliveryMethod = orderData.delivery_method || 'pickup';
+    
+    console.log("--- NEW ORDER RECEIVED ---");
+    console.log("Body:", JSON.stringify(orderData, null, 2));
+    console.log(`Delivery Method: ${deliveryMethod}`);
+    console.log(`Customer Email: ${orderData.email}`);
+    console.log("--------------------------");
 
-    if (!orderData) {
-      return res.status(400).json({ error: "Missing order data" });
+    if (!orderData || !orderData.email) {
+      console.error("Order data or email missing in request body");
+      return res.status(400).json({ error: "Missing order data or email" });
     }
+
+    let savedOrder: any = null;
 
     try {
       const supabase = getSupabase();
-      const { data, error } = await supabase
+      
+      console.log("Attempting to save order to Supabase...");
+      // Add a timeout to the Supabase request
+      const supabasePromise = supabase
         .from('orders')
         .insert([orderData])
         .select();
+        
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Supabase request timed out")), 10000)
+      );
+
+      const { data, error } = await Promise.race([supabasePromise, timeoutPromise]) as any;
 
       if (error) {
-        console.error(`Supabase Error Details: [${error.code}] ${error.message}. Hint: ${error.hint}. Details: ${error.details}`);
-        return res.status(500).json({ 
-          error: error.message || "Unknown Supabase error", 
-          details: error.details, 
-          hint: error.hint,
-          code: error.code 
-        });
+        throw new Error(`Supabase Error: [${error.code}] ${error.message}`);
       }
+      
+      if (!data || data.length === 0) {
+        throw new Error("Supabase returned no data after insert");
+      }
+      
+      savedOrder = data[0];
+      console.log(`Order saved to Supabase with ID: ${savedOrder.id}`);
+    } catch (error: any) {
+      if (error.message && error.message.includes('fetch failed')) {
+        console.warn("Supabase not available (fetch failed), using SQLite fallback.");
+      } else if (error.message && error.message.includes('PGRST204')) {
+        console.error("CRITICAL: Supabase Schema Mismatch. The 'orders' table is missing the 'city' column.");
+        console.error("Please run the SQL in supabase-setup.sql in your Supabase SQL Editor to fix this.");
+      } else {
+        console.error("Error saving order to Supabase, falling back to SQLite:", error.message || error);
+      }
+      
+      try {
+        const id = 'ord_' + Date.now() + Math.floor(Math.random() * 1000);
+        console.log(`Attempting to save order to SQLite with ID: ${id}...`);
+        const stmt = db.prepare(`
+          INSERT INTO orders (id, email, first_name, last_name, address, city, state, zip, product_name, total_amount, delivery_method)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        stmt.run(
+          id, orderData.email, orderData.first_name, orderData.last_name, 
+          orderData.street_address || orderData.address || '', 
+          orderData.city || '', 
+          orderData.state || '', 
+          orderData.zip_code || orderData.zip || '', 
+          orderData.product_name, orderData.total_amount, deliveryMethod
+        );
+        savedOrder = { id, ...orderData, delivery_method: deliveryMethod };
+        console.log("Order saved to SQLite successfully.");
+      } catch (sqliteError) {
+        console.error("SQLite fallback failed:", sqliteError);
+        return res.status(500).json({ error: "Failed to save order in both Supabase and SQLite" });
+      }
+    }
 
-      // Send Order Confirmation Email
-      sendEmail(orderData.email, `Order Confirmed! 🛒 #${data[0].id.toString().substring(0, 8)}`, `
+    // Send Order Confirmation Email
+    if (orderData.email) {
+      const deliveryText = deliveryMethod === 'home' ? "Home Delivery" : "Pickup from Farm";
+      console.log(`[EMAIL] Attempting to send CONFIRMATION email to ${orderData.email}`);
+      
+      sendEmail(orderData.email, `Order Confirmed! 🛒 #${savedOrder.id.toString().substring(0, 8)}`, `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
           <h2 style="color: #5A5A40;">Order Confirmation</h2>
           <p>Hi ${orderData.first_name},</p>
           <p>Your order has been placed successfully and is being processed by our farmers.</p>
           <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Order ID:</strong> ${data[0].id}</p>
+            <p style="margin: 0;"><strong>Order ID:</strong> ${savedOrder.id}</p>
             <p style="margin: 5px 0 0 0;"><strong>Items:</strong> ${orderData.product_name}</p>
             <p style="margin: 5px 0 0 0;"><strong>Total:</strong> ₹${orderData.total_amount}</p>
+            <p style="margin: 5px 0 0 0;"><strong>Delivery Type:</strong> ${deliveryText}</p>
           </div>
-          <p>We'll notify you when your harvest is on its way!</p>
+          <p>${deliveryMethod === 'home' ? "We'll notify you when your harvest is on its way!" : "You will receive an email when your order is ready for pickup."}</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
           <p style="font-size: 12px; color: #666;">This is an automated message. Please do not reply.</p>
         </div>
-      `).catch(err => console.error("Order confirmation email failed:", err));
+      `).then(() => console.log(`[EMAIL] Confirmation email sent successfully to ${orderData.email}`))
+        .catch(err => console.error(`[EMAIL] Confirmation email FAILED for ${orderData.email}:`, err));
 
-      res.json({ success: true, data });
-    } catch (error: any) {
-      console.error("Error saving order to Supabase:", {
-        message: error.message,
-        stack: error.stack,
-        error
-      });
-      res.status(500).json({ error: "Failed to save order" });
+      // If home delivery, send "Delivered" email after 10 seconds
+      if (deliveryMethod === 'home') {
+        console.log("[EMAIL] Scheduling DELIVERY notification email in 10 seconds...");
+        setTimeout(() => {
+          console.log(`[EMAIL] Triggering automatic DELIVERY notification for order ${savedOrder.id} to ${orderData.email}`);
+          sendEmail(orderData.email, `Order Delivered Successfully! 📦 #${savedOrder.id.toString().substring(0, 8)}`, `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+              <h2 style="color: #4CAF50;">Delivered!</h2>
+              <p>Hi ${orderData.first_name},</p>
+              <p>Your order #${savedOrder.id} has been delivered successfully. We hope you enjoy your fresh harvest!</p>
+              <p>Don't forget to leave a review for the farmer.</p>
+              <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+              <p style="font-size: 12px; color: #666;">This is an automated message. Please do not reply.</p>
+            </div>
+          `).then(() => console.log(`[EMAIL] Delivery notification sent successfully to ${orderData.email}`))
+            .catch(err => console.error(`[EMAIL] Delivery notification FAILED for ${orderData.email}:`, err));
+        }, 10000); // 10 seconds
+      }
+    } else {
+      console.warn("Order placed without email, skipping confirmation email.");
     }
+
+    res.json({ success: true, data: [savedOrder] });
   });
 
   // Order Status Update Route (Mock for Admin/Farmer)
   app.post("/api/orders/status", async (req, res) => {
     const { orderId, email, status, trackingNumber, customerName } = req.body;
     
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
     try {
       let subject = "";
       let message = "";
@@ -331,6 +571,32 @@ async function startServer() {
     } catch (error) {
       console.error("Failed to send status email:", error);
       res.status(500).json({ error: "Failed to send status email" });
+    }
+  });
+
+  // Order Pickup Route
+  app.post("/api/orders/pickup", async (req, res) => {
+    const { orderId, email, customerName } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    try {
+      await sendEmail(email, `Order Picked Up! 🧺 #${orderId.substring(0, 8)}`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+          <h2 style="color: #5A5A40;">Order Picked Up</h2>
+          <p>Hi ${customerName || 'Customer'},</p>
+          <p>Your order #${orderId} has been successfully picked up from the farm.</p>
+          <p>Thank you for supporting local farmers! We hope you enjoy your fresh harvest.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+          <p style="font-size: 12px; color: #666;">This is an automated message. Please do not reply.</p>
+        </div>
+      `);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to send pickup email:", error);
+      res.status(500).json({ error: "Failed to send email" });
     }
   });
 

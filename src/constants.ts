@@ -134,5 +134,43 @@ export const PRODUCTS: Product[] = [
     reviews: [
       { id: 'r8', userName: 'Meera K.', rating: 5, comment: 'Smells amazing!', date: '2026-03-11' }
     ]
+  },
+  {
+    id: '8',
+    name: 'Fresh Curry Leaves',
+    price: 15,
+    unit: 'bunch',
+    category: 'Herbs',
+    image: 'https://images.unsplash.com/photo-1628157588553-5eeea00af15c?auto=format&fit=crop&q=80&w=800',
+    farmerName: 'Chennai Greens',
+    farmerPhoto: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=150',
+    farmerMobile: '+91 98765 43216',
+    farmLocation: 'Chennai, Tamil Nadu',
+    description: 'Freshly picked aromatic curry leaves from local gardens.',
+    stock: 50,
+    coordinates: { lat: 13.0827, lng: 80.2707 },
+    rating: 4.8,
+    reviews: [
+      { id: 'r9', userName: 'Karthik R.', rating: 5, comment: 'Very fresh!', date: '2026-03-12' }
+    ]
+  },
+  {
+    id: '9',
+    name: 'Madurai Malli (Jasmine)',
+    price: 120,
+    unit: 'string',
+    category: 'Flowers',
+    image: 'https://images.unsplash.com/photo-1596438459194-f21bb40b59b1?auto=format&fit=crop&q=80&w=800',
+    farmerName: 'Madurai Florals',
+    farmerPhoto: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&q=80&w=150',
+    farmerMobile: '+91 98765 43217',
+    farmLocation: 'Madurai, Tamil Nadu',
+    description: 'Fragrant Madurai jasmine flowers, freshly strung.',
+    stock: 30,
+    coordinates: { lat: 9.9252, lng: 78.1198 },
+    rating: 5.0,
+    reviews: [
+      { id: 'r10', userName: 'Lakshmi S.', rating: 5, comment: 'Beautiful fragrance.', date: '2026-03-13' }
+    ]
   }
 ];

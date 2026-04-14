@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Mail, Lock, User, MapPin, Tractor, ArrowLeft, Loader2 } from 'lucide-react';
+import { X, Mail, Lock, User, MapPin, Tractor, ArrowLeft, Loader2, Eye, EyeOff } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { translations, Language } from '../lib/translations';
 
@@ -48,9 +48,104 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
 
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [isOtpVerification, setIsOtpVerification] = useState(false);
+  const [verificationType, setVerificationType] = useState<'register' | 'reset'>('register');
+  const [otp, setOtp] = useState(['', '', '', '']);
+  const [newPassword, setNewPassword] = useState('');
+
+  const handleOtpChange = (index: number, value: string) => {
+    if (value.length > 1) value = value[0];
+    if (!/^\d*$/.test(value)) return;
+    
+    const newOtp = [...otp];
+    newOtp[index] = value;
+    setOtp(newOtp);
+
+    // Auto-focus next input
+    if (value && index < 3) {
+      const nextInput = document.getElementById(`otp-${index + 1}`);
+      nextInput?.focus();
+    }
+  };
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent) => {
+    if (e.key === 'Backspace' && !otp[index] && index > 0) {
+      const prevInput = document.getElementById(`otp-${index - 1}`);
+      prevInput?.focus();
+    }
+  };
+
+  const handleAuthSuccess = async (userData: any) => {
+    let finalUser = { ...userData };
+    
+    // Geocode farmer location if coordinates are missing
+    if (finalUser.role === 'farmer' && finalUser.location && !finalUser.coordinates) {
+      try {
+        const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(finalUser.location)}`);
+        const geoData = await geoRes.json();
+        if (geoData && geoData.length > 0) {
+          finalUser.coordinates = { lat: parseFloat(geoData[0].lat), lng: parseFloat(geoData[0].lon) };
+        }
+      } catch (e) {
+        console.error("Geocoding failed during auth", e);
+      }
+    }
+    
+    onSuccess(finalUser);
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const otpString = otp.join('');
+    if (otpString.length !== 4) {
+      setError('Please enter a valid 4-digit code');
+      return;
+    }
+
+    setError('');
+    setIsLoading(true);
+
+    try {
+      if (verificationType === 'register') {
+        const response = await fetch('/api/auth/verify-register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: formData.email, otp: otpString }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        
+        handleAuthSuccess(data.user);
+      } else {
+        if (!newPassword) {
+          throw new Error('Please enter a new password');
+        }
+        const response = await fetch('/api/auth/reset-password-verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: formData.email, otp: otpString, newPassword }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        
+        setIsForgotPassword(false);
+        setResetSent(false);
+        setIsOtpVerification(false);
+        setIsLogin(true);
+        setFormData({ ...formData, password: '' });
+        alert('Password reset successfully. Please login.');
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,6 +160,9 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setResetSent(true);
+      setVerificationType('reset');
+      setIsOtpVerification(true);
+      setOtp(['', '', '', '']);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -97,6 +195,13 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
         throw new Error(data.error || 'Authentication failed');
       }
 
+      if (data.requireOtp) {
+        setVerificationType('register');
+        setIsOtpVerification(true);
+        setOtp(['', '', '', '']);
+        return;
+      }
+
       if (rememberMe) {
         localStorage.setItem('farm2homeEmail', formData.email);
         localStorage.setItem('farm2homePassword', formData.password);
@@ -109,7 +214,7 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
         localStorage.setItem('farm2homeRememberMe', 'false');
       }
 
-      onSuccess(data.user);
+      handleAuthSuccess(data.user);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -143,14 +248,82 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
         <div className="p-8">
           <div className="text-center mb-8">
             <h2 className="text-3xl font-serif font-bold mb-2">
-              {isForgotPassword ? "Reset Password" : (isLogin ? t.welcomeBack : t.joinFarm2Home)}
+              {isOtpVerification ? "Verify Email" : isForgotPassword ? "Reset Password" : (isLogin ? t.welcomeBack : t.joinFarm2Home)}
             </h2>
             <p className="text-brand-ink/60 text-sm">
-              {isForgotPassword ? "Enter your email to receive a verification code" : (isLogin ? t.signInAccount : t.createAccountShop)}
+              {isOtpVerification ? `Enter the 4-digit code sent to ${formData.email}` : isForgotPassword ? "Enter your email to receive a verification code" : (isLogin ? t.signInAccount : t.createAccountShop)}
             </p>
           </div>
 
-          {isForgotPassword ? (
+          {isOtpVerification ? (
+            <form onSubmit={handleVerifyOtp} className="space-y-6">
+              <div className="flex justify-center gap-4">
+                {otp.map((digit, index) => (
+                  <input
+                    key={index}
+                    id={`otp-${index}`}
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={1}
+                    value={digit}
+                    onChange={(e) => handleOtpChange(index, e.target.value)}
+                    onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                    className="w-14 h-14 text-center text-2xl font-bold bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20 transition-all"
+                  />
+                ))}
+              </div>
+
+              {verificationType === 'reset' && (
+                <div className="relative mt-6">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-ink/30" size={18} />
+                  <input 
+                    type={showNewPassword ? "text" : "password"} 
+                    placeholder="New Password"
+                    required
+                    className="w-full pl-10 pr-12 py-3 bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20 transition-all"
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-ink/40 hover:text-brand-ink/60 transition-colors"
+                  >
+                    {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              )}
+
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-100 text-red-500 text-sm rounded-xl text-center">
+                  {error}
+                </div>
+              )}
+
+              <button 
+                type="submit"
+                disabled={isLoading || otp.join('').length !== 4 || (verificationType === 'reset' && !newPassword)}
+                className="w-full py-4 bg-brand-olive text-white rounded-xl font-bold text-lg hover:bg-brand-olive/90 transition-all shadow-lg shadow-brand-olive/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isLoading && <Loader2 className="animate-spin" size={20} />}
+                Verify & {verificationType === 'reset' ? 'Reset Password' : 'Create Account'}
+              </button>
+              
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOtpVerification(false);
+                  if (verificationType === 'reset') {
+                    setIsForgotPassword(false);
+                    setResetSent(false);
+                  }
+                }}
+                className="w-full text-brand-ink/40 text-sm font-medium hover:text-brand-ink/60"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : isForgotPassword ? (
             <div className="space-y-6">
               {resetSent ? (
                 <div className="text-center space-y-4">
@@ -304,13 +477,20 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-ink/30" size={18} />
                   <input 
-                    type="password" 
+                    type={showPassword ? "text" : "password"} 
                     placeholder={t.password}
                     required
-                    className="w-full pl-10 pr-4 py-3 bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20 transition-all"
+                    className="w-full pl-10 pr-12 py-3 bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20 transition-all"
                     value={formData.password}
                     onChange={e => setFormData({...formData, password: e.target.value})}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-ink/40 hover:text-brand-ink/60 transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
                 </div>
 
                 {isLogin && (

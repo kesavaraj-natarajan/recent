@@ -61,6 +61,7 @@ export default function App() {
     address?: string;
     farmName?: string;
     location?: string;
+    coordinates?: { lat: number; lng: number };
     profilePhoto?: string;
   } | null>(() => {
     const savedUser = localStorage.getItem('farm2homeUser');
@@ -69,6 +70,7 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -89,6 +91,7 @@ export default function App() {
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
   const [minRating, setMinRating] = useState<number>(0);
   const [selectedProductForReviews, setSelectedProductForReviews] = useState<Product | null>(null);
+  const [selectedFarmer, setSelectedFarmer] = useState<Product | null>(null);
   const [newReview, setNewReview] = useState({ rating: 5, comment: '', imageUrl: '' });
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isOrderSuccess, setIsOrderSuccess] = useState(false);
@@ -98,11 +101,12 @@ export default function App() {
   const [isOrderTrackingOpen, setIsOrderTrackingOpen] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'upi' | 'netbanking'>('card');
-  const [orders, setOrders] = useState<{ id: string; date: string; total: number; status: string; items: CartItem[] }[]>([]);
+  const [orders, setOrders] = useState<{ id: string; date: string; total: number; status: string; items: CartItem[], customer?: string }[]>([]);
   const [emails, setEmails] = useState<{ id: string; subject: string; body: string; date: string; read: boolean }[]>([]);
   const [notifications, setNotifications] = useState<{ id: string; title: string; message: string; type: 'email' | 'info' }[]>([]);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; address: string } | null>(null);
+  const [searchRadius, setSearchRadius] = useState<number>(50); // Increased default radius
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [locationInput, setLocationInput] = useState('');
   const [voiceCommand, setVoiceCommand] = useState<any>(null);
@@ -144,10 +148,10 @@ export default function App() {
       let matchesLocation = true;
       if (userLocation) {
         const distance = calculateDistance(userLocation.lat, userLocation.lng, product.coordinates.lat, product.coordinates.lng);
-        matchesLocation = distance <= 10;
+        matchesLocation = distance <= searchRadius;
       }
 
-      return matchesSearch && matchesCategory && matchesPrice && matchesRating && matchesLocation;
+      return matchesSearch && matchesCategory && matchesPrice && matchesRating && matchesLocation && product.stock > 0;
     })
     .sort((a, b) => {
       if (sortBy === 'name') return a.name.localeCompare(b.name);
@@ -183,9 +187,17 @@ export default function App() {
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
+        if (existing.quantity >= product.stock) {
+          addNotification("Out of Stock", `Only ${product.stock} units of ${product.name} available.`, "info");
+          return prev;
+        }
         return prev.map(item => 
           item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
         );
+      }
+      if (product.stock < 1) {
+        addNotification("Out of Stock", `${product.name} is currently out of stock.`, "info");
+        return prev;
       }
       return [...prev, { ...product, quantity: 1 }];
     });
@@ -324,6 +336,7 @@ export default function App() {
           zip_code: zipCode,
           product_name: productNames,
           total_amount: cartTotal + (deliveryMethod === 'home' ? 50 : 0),
+          delivery_method: deliveryMethod,
           date_time: new Date().toISOString()
         })
       });
@@ -340,70 +353,21 @@ export default function App() {
     const newOrder = {
       id: orderId,
       date: new Date().toLocaleDateString(),
-      total: cartTotal,
+      total: cartTotal + (deliveryMethod === 'home' ? 50 : 0),
       status: 'Processing',
-      items: [...cart]
+      items: [...cart],
+      customer: user?.name || `${firstName} ${lastName}`,
+      deliveryMethod: deliveryMethod,
+      email: email
     };
     setOrders(prev => [newOrder, ...prev]);
 
-    // Simulate Confirmation Email
-    setTimeout(async () => {
-      const subject = `${t.orderConfirmation}: ${orderId}`;
-      const body = t.orderConfirmationBody
-        .replace('{name}', user?.name || '')
-        .replace('{orderId}', orderId)
-        .replace('{total}', cartTotal.toFixed(2));
-      
-      receiveEmail(subject, body);
-      // Note: /api/orders already sends the confirmation email on the server side
-      
-      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'Shipped' } : o));
-      
-      // Send Real "Shipped" Email
-      try {
-        await fetch('/api/orders/status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orderId,
-            email: email,
-            status: 'Shipped',
-            customerName: user?.name || firstName
-          })
-        });
-      } catch (e) { console.error(e); }
-    
-      // Sync with Inbox
-      const shipSubject = `${t.harvestOnWay}: ${orderId}`;
-      const shipBody = t.harvestOnWayBody
-        .replace('{name}', user?.name || '')
-        .replace('{orderId}', orderId);
-      receiveEmail(shipSubject, shipBody);
-    }, 1500);
-
-    // Simulate Delivery Email
-    setTimeout(async () => {
-      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'Delivered' } : o));
-      
-      // Send Real "Delivered" Email
-      try {
-        await fetch('/api/orders/status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orderId,
-            email: email,
-            status: 'Delivered',
-            customerName: user?.name || firstName
-          })
-        });
-      } catch (e) { console.error(e); }
-
-      // Sync with Inbox
-      const deliverySubject = `${t.delivered}: ${orderId}`;
-      const deliveryBody = `Hi ${user?.name || firstName}! Your harvest ${orderId} has been delivered. We hope you enjoy the fresh produce!`;
-      receiveEmail(deliverySubject, deliveryBody);
-    }, 12000);
+    // If home delivery, update status to Delivered after 12 seconds
+    if (deliveryMethod === 'home') {
+      setTimeout(() => {
+        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'Delivered' } : o));
+      }, 12000);
+    }
 };
 
 const handleCancelOrder = (orderId: string) => {
@@ -700,10 +664,14 @@ const handleCancelOrder = (orderId: string) => {
           <FarmerDashboard 
             farmerName={user.farmName || user.name} 
             farmerPhoto={user.profilePhoto}
+            user={user}
+            onUpdateUser={setUser}
             products={products} 
             onUpdateProducts={setProducts} 
             lang={lang}
             voiceCommand={voiceCommand}
+            orders={orders}
+            addNotification={addNotification}
           />
         ) : (
           <>
@@ -1032,13 +1000,24 @@ const handleCancelOrder = (orderId: string) => {
                           <h3 className="font-serif text-xl font-semibold">{product.name}</h3>
                           <span className="font-bold text-brand-olive">₹{product.price.toFixed(2)}</span>
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-brand-ink/40 mb-1">
+                        <div 
+                          className="flex items-center gap-1 text-xs text-brand-ink/40 mb-1 cursor-pointer hover:text-brand-olive transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFarmer(product);
+                          }}
+                        >
                           {product.farmerPhoto ? (
                             <img src={product.farmerPhoto} alt={product.farmerName} className="w-4 h-4 rounded-full object-cover" />
                           ) : (
                             <MapPin size={12} />
                           )}
                           <span>{product.farmerName} • {product.farmLocation}</span>
+                          {userLocation && (
+                            <span className="ml-1 text-brand-olive font-bold">
+                              ({calculateDistance(userLocation.lat, userLocation.lng, product.coordinates.lat, product.coordinates.lng).toFixed(1)} km)
+                            </span>
+                          )}
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1111,7 +1090,7 @@ const handleCancelOrder = (orderId: string) => {
               </AnimatePresence>
             </div>
           ) : (
-            <FarmMap products={filteredProducts} onAddToCart={addToCart} />
+            <FarmMap products={filteredProducts} onAddToCart={addToCart} userLocation={userLocation} searchRadius={searchRadius} />
           )}
         </section>
           </>
@@ -1314,8 +1293,22 @@ const handleCancelOrder = (orderId: string) => {
                             )}
                             <button 
                               onClick={() => {
-                                setSearchQuery(farmerName);
-                                setIsFavoritesOpen(false);
+                                setSelectedFarmer(farmerProduct || { 
+                                  id: 'temp', 
+                                  farmerName: farmerName, 
+                                  farmerMobile: '', 
+                                  farmLocation: '', 
+                                  name: '', 
+                                  price: 0, 
+                                  unit: '', 
+                                  category: 'Vegetables', 
+                                  image: '', 
+                                  description: '', 
+                                  stock: 0, 
+                                  coordinates: { lat: 0, lng: 0 }, 
+                                  rating: 5, 
+                                  reviews: [] 
+                                } as Product);
                               }}
                               className="font-serif text-lg font-bold hover:text-brand-olive hover:underline text-left"
                             >
@@ -1340,15 +1333,25 @@ const handleCancelOrder = (orderId: string) => {
                                 <Phone size={14} />
                                 <span>{farmerProduct.farmerMobile}</span>
                               </a>
-                              <button 
-                                onClick={() => {
-                                  setIsFavoritesOpen(false);
-                                  setSearchQuery(farmerName);
-                                }}
-                                className="w-full py-2 bg-brand-olive/10 text-brand-olive rounded-lg font-medium hover:bg-brand-olive/20 transition-colors"
-                              >
-                                View Products
-                              </button>
+                              <div className="grid grid-cols-2 gap-2">
+                                <button 
+                                  onClick={() => {
+                                    setIsFavoritesOpen(false);
+                                    setSearchQuery(farmerName);
+                                  }}
+                                  className="py-2 bg-brand-olive/10 text-brand-olive rounded-lg font-medium hover:bg-brand-olive/20 transition-colors text-sm"
+                                >
+                                  View Products
+                                </button>
+                                <button 
+                                  onClick={() => {
+                                    setSelectedFarmer(farmerProduct!);
+                                  }}
+                                  className="py-2 bg-white text-brand-olive border border-brand-olive/20 rounded-lg font-medium hover:bg-brand-olive/5 transition-colors text-sm"
+                                >
+                                  View Profile
+                                </button>
+                              </div>
                             </>
                           )}
                         </div>
@@ -1363,26 +1366,30 @@ const handleCancelOrder = (orderId: string) => {
       </AnimatePresence>
 
       {/* AI Assistant Toggle */}
-      <button 
-        onClick={() => setIsAiOpen(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-brand-olive text-white rounded-full shadow-xl flex items-center justify-center hover:scale-110 transition-transform z-40 group"
-      >
-        <HelpCircle size={24} />
-        <span className="absolute -top-10 bg-brand-ink text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-          AI Help
-        </span>
-      </button>
+      {view === 'marketplace' && currentPage === 'home' && !isCheckoutOpen && !isFavoritesOpen && !isCartOpen && !isInboxOpen && (
+        <button 
+          onClick={() => setIsAiOpen(true)}
+          className="fixed bottom-6 right-6 w-14 h-14 bg-brand-olive text-white rounded-full shadow-xl flex items-center justify-center hover:scale-110 transition-transform z-40 group"
+        >
+          <HelpCircle size={24} />
+          <span className="absolute -top-10 bg-brand-ink text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+            AI Help
+          </span>
+        </button>
+      )}
 
       {/* Voice Assistant */}
-      <VoiceAssistant 
-        userRole={user?.role} 
-        lang={lang} 
-        onAction={handleVoiceAction} 
-      />
+      {view === 'marketplace' && currentPage === 'home' && !isCheckoutOpen && !isFavoritesOpen && !isCartOpen && !isInboxOpen && (
+        <VoiceAssistant 
+          userRole={user?.role} 
+          lang={lang} 
+          onAction={handleVoiceAction} 
+        />
+      )}
 
       {/* AI Assistant Drawer */}
       <AnimatePresence>
-        {isAiOpen && (
+        {isAiOpen && view === 'marketplace' && currentPage === 'home' && !isCheckoutOpen && !isFavoritesOpen && !isCartOpen && !isInboxOpen && (
           <motion.div 
             initial={{ opacity: 0, y: 20, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1906,7 +1913,7 @@ const handleCancelOrder = (orderId: string) => {
               </div>
               <div className="space-y-4">
                 <p className="text-sm text-brand-ink/60">
-                  Enter your location to find farmers within a 10km radius.
+                  Enter your location to find farmers nearby.
                 </p>
                 <div className="relative">
                   <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-ink/40" size={18} />
@@ -1918,34 +1925,86 @@ const handleCancelOrder = (orderId: string) => {
                     onChange={(e) => setLocationInput(e.target.value)}
                   />
                 </div>
+                <div className="pt-2">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-medium text-brand-ink">Search Radius</span>
+                    <span className="text-sm font-bold text-brand-olive">{searchRadius} km</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="1" 
+                    max="500" 
+                    value={searchRadius} 
+                    onChange={(e) => setSearchRadius(Number(e.target.value))}
+                    className="w-full accent-brand-olive"
+                  />
+                  <div className="flex justify-between text-xs text-brand-ink/40 mt-1">
+                    <span>1 km</span>
+                    <span>500 km</span>
+                  </div>
+                </div>
                 <button
-                  onClick={() => {
-                    // Simulate geocoding for demo purposes
-                    // In a real app, you would use Google Maps Geocoding API
-                    const mockCoordinates: Record<string, {lat: number, lng: number}> = {
-                      'chennai': { lat: 13.0827, lng: 80.2707 },
-                      'bangalore': { lat: 12.9716, lng: 77.5946 },
-                      'madurai': { lat: 9.9252, lng: 78.1198 },
-                      'coimbatore': { lat: 11.0168, lng: 76.9558 },
-                    };
+                  onClick={async () => {
+                    if (!locationInput.trim()) return;
                     
-                    const query = locationInput.toLowerCase().trim();
-                    let coords = { lat: 13.0827, lng: 80.2707 }; // Default to Chennai
-                    
-                    for (const [city, c] of Object.entries(mockCoordinates)) {
-                      if (query.includes(city)) {
-                        coords = c;
-                        break;
+                    try {
+                      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(locationInput)}`);
+                      const data = await response.json();
+                      
+                      if (data && data.length > 0) {
+                        const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                        setUserLocation({ ...coords, address: locationInput });
+                        setIsLocationModalOpen(false);
+                        setViewMode('map');
+                        addNotification("Location Updated", `Showing farmers near ${locationInput}`, "info");
+                      } else {
+                        addNotification("Location Not Found", "Could not find coordinates for this location.", "info");
                       }
+                    } catch (error) {
+                      console.error("Geocoding error:", error);
+                      addNotification("Error", "Failed to get location coordinates.", "info");
                     }
-                    
-                    setUserLocation({ ...coords, address: locationInput || 'Chennai' });
-                    setIsLocationModalOpen(false);
-                    addNotification("Location Updated", `Showing farmers near ${locationInput || 'Chennai'}`, "info");
                   }}
                   className="w-full py-3 bg-brand-olive text-white rounded-xl font-bold hover:bg-brand-olive/90 transition-all"
                 >
                   Save Location
+                </button>
+                <button
+                  onClick={() => {
+                    if (navigator.geolocation) {
+                      navigator.geolocation.getCurrentPosition(
+                        async (position) => {
+                          const { latitude, longitude } = position.coords;
+                          try {
+                            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+                            const data = await response.json();
+                            const address = data.address?.city || data.address?.town || data.address?.village || data.address?.state || "Your Location";
+                            
+                            setUserLocation({ lat: latitude, lng: longitude, address });
+                            setLocationInput(address);
+                            setIsLocationModalOpen(false);
+                            setViewMode('map');
+                            addNotification("Location Detected", `Showing farmers near ${address}`, "info");
+                          } catch (error) {
+                            setUserLocation({ lat: latitude, lng: longitude, address: "Your Location" });
+                            setLocationInput("Your Location");
+                            setIsLocationModalOpen(false);
+                            setViewMode('map');
+                            addNotification("Location Detected", "Showing farmers near your location", "info");
+                          }
+                        },
+                        (error) => {
+                          console.error("Geolocation error:", error);
+                          addNotification("Error", "Could not detect your location. Please check permissions.", "info");
+                        }
+                      );
+                    } else {
+                      addNotification("Error", "Geolocation is not supported by your browser.", "info");
+                    }
+                  }}
+                  className="w-full py-3 bg-brand-olive/10 text-brand-olive rounded-xl font-bold hover:bg-brand-olive/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <MapPin size={18} /> Auto Detect Location
                 </button>
                 {userLocation && (
                   <button
@@ -2104,6 +2163,22 @@ const handleCancelOrder = (orderId: string) => {
                               className="flex-1 bg-transparent focus:outline-none text-sm font-medium"
                               value={user.location || ''}
                               onChange={(e) => setUser({...user, location: e.target.value})}
+                              onBlur={async (e) => {
+                                const val = e.target.value;
+                                if (val && val.trim()) {
+                                  try {
+                                    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(val)}`);
+                                    const data = await response.json();
+                                    if (data && data.length > 0) {
+                                      const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                                      setUser({ ...user, location: val, coordinates: coords });
+                                      addNotification("Location Verified", `Coordinates found for ${val}`, "info");
+                                    }
+                                  } catch (error) {
+                                    console.error("Geocoding error:", error);
+                                  }
+                                }
+                              }}
                             />
                           </div>
                         </div>
@@ -2589,6 +2664,109 @@ const handleCancelOrder = (orderId: string) => {
                     </motion.div>
                   ))
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Farmer Details Modal */}
+      <AnimatePresence>
+        {selectedFarmer && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedFarmer(null)}
+              className="absolute inset-0 bg-brand-ink/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-brand-cream rounded-[32px] shadow-2xl overflow-hidden flex flex-col"
+            >
+              <div className="p-6 border-b border-brand-ink/10 flex justify-between items-center bg-white">
+                <h2 className="text-xl font-serif font-bold">Farmer Profile</h2>
+                <button onClick={() => setSelectedFarmer(null)} className="p-2 hover:bg-brand-ink/5 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="p-8 flex flex-col items-center text-center">
+                <div className="relative mb-6">
+                  {selectedFarmer.farmerPhoto ? (
+                    <img src={selectedFarmer.farmerPhoto} alt={selectedFarmer.farmerName} className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg" />
+                  ) : (
+                    <div className="w-32 h-32 rounded-full bg-brand-olive/10 flex items-center justify-center text-brand-olive border-4 border-white shadow-lg">
+                      <User size={64} />
+                    </div>
+                  )}
+                  <div className="absolute -bottom-2 -right-2 bg-brand-olive text-white p-2 rounded-full shadow-lg">
+                    <Tractor size={20} />
+                  </div>
+                </div>
+
+                <h3 className="text-2xl font-serif font-bold mb-2">{selectedFarmer.farmerName}</h3>
+                <p className="text-brand-ink/60 italic mb-6">"Dedicated to providing fresh, organic harvest directly from our fields to your home."</p>
+
+                <div className="w-full space-y-4 mb-8">
+                  <div className="flex items-center gap-4 p-4 bg-white rounded-2xl border border-brand-ink/5">
+                    <div className="w-10 h-10 bg-brand-olive/10 text-brand-olive rounded-full flex items-center justify-center">
+                      <MapPin size={20} />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[10px] font-bold text-brand-ink/40 uppercase tracking-widest">Farm Location</p>
+                      <p className="font-medium">{selectedFarmer.farmLocation}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 p-4 bg-white rounded-2xl border border-brand-ink/5">
+                    <div className="w-10 h-10 bg-brand-olive/10 text-brand-olive rounded-full flex items-center justify-center">
+                      <Phone size={20} />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[10px] font-bold text-brand-ink/40 uppercase tracking-widest">Contact Number</p>
+                      <p className="font-medium">{selectedFarmer.farmerMobile}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 w-full mb-4">
+                  <button 
+                    onClick={() => {
+                      setSearchQuery(selectedFarmer.farmerName);
+                      setSelectedFarmer(null);
+                    }}
+                    className="flex-1 py-3 bg-brand-olive text-white rounded-xl font-bold hover:bg-brand-olive/90 transition-all shadow-lg shadow-brand-olive/20"
+                  >
+                    View All Products
+                  </button>
+                  <a 
+                    href={`tel:${selectedFarmer.farmerMobile}`}
+                    className="flex-1 py-3 bg-white text-brand-olive border border-brand-olive/20 rounded-xl font-bold hover:bg-brand-olive/5 transition-all text-center"
+                  >
+                    Call Farmer
+                  </a>
+                </div>
+
+                <button 
+                  onClick={() => {
+                    setUserLocation({ 
+                      lat: selectedFarmer.coordinates.lat, 
+                      lng: selectedFarmer.coordinates.lng, 
+                      address: selectedFarmer.farmLocation 
+                    });
+                    setSearchRadius(25); // Set a default radius
+                    setSelectedFarmer(null);
+                    setViewMode('map');
+                    addNotification("Location Filter Applied", `Showing farmers within 25km of ${selectedFarmer.farmerName}'s farm`, "info");
+                  }}
+                  className="w-full py-3 bg-brand-cream border-2 border-dashed border-brand-olive/30 text-brand-olive rounded-xl font-bold hover:bg-brand-olive/5 transition-all flex items-center justify-center gap-2"
+                >
+                  <MapPin size={18} /> Find Farmers Near This Farm
+                </button>
               </div>
             </motion.div>
           </div>

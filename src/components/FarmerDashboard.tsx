@@ -17,7 +17,9 @@ import {
   Camera,
   Upload,
   RefreshCw,
-  ChevronRight
+  ChevronRight,
+  MapPin,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -41,10 +43,14 @@ import { getDefaultProductImage } from '../lib/imageUtils';
 interface FarmerDashboardProps {
   farmerName: string;
   farmerPhoto?: string;
+  user: any;
+  onUpdateUser: (user: any) => void;
   products: Product[];
   onUpdateProducts: (products: Product[]) => void;
   lang: Language;
   voiceCommand?: any;
+  orders?: any[];
+  addNotification: (title: string, message: string, type: 'email' | 'info') => void;
 }
 
 const MOCK_ORDERS = [
@@ -54,14 +60,42 @@ const MOCK_ORDERS = [
   { id: 'ORD-004', customer: 'Priya Patel', items: 'Fresh Palak (1 bunch)', total: 30.00, status: 'Cancelled', date: '2026-03-11' },
 ];
 
-export default function FarmerDashboard({ farmerName, farmerPhoto, products, onUpdateProducts, lang, voiceCommand }: FarmerDashboardProps) {
+export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdateUser, products, onUpdateProducts, lang, voiceCommand, orders = [], addNotification }: FarmerDashboardProps) {
   const t = translations[lang];
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const [locationInput, setLocationInput] = useState(user.location || '');
   const [isImageManuallyEdited, setIsImageManuallyEdited] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Filter orders to only include those containing products from this farmer
+  const farmerOrders = React.useMemo(() => {
+    const relevantOrders = orders.filter(order => 
+      order.items.some((item: any) => item.farmerName === farmerName)
+    ).map(order => {
+      // Calculate total only for this farmer's items
+      const farmerItems = order.items.filter((item: any) => item.farmerName === farmerName);
+      const farmerTotal = farmerItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+      const itemsString = farmerItems.map((item: any) => `${item.name} (${item.quantity}${item.unit})`).join(', ');
+      
+      return {
+        id: order.id,
+        customer: order.customer || 'Guest Customer',
+        items: itemsString,
+        total: farmerTotal,
+        status: order.status,
+        date: order.date,
+        deliveryMethod: order.deliveryMethod,
+        email: order.email
+      };
+    });
+
+    // Combine with mock orders if real orders are empty for demonstration
+    return relevantOrders.length > 0 ? relevantOrders : MOCK_ORDERS;
+  }, [orders, farmerName]);
 
   const MOCK_SALES_DATA = [
     { name: t.mon, sales: 400 },
@@ -84,7 +118,7 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
   });
 
   const farmerProducts = products.filter(p => p.farmerName === farmerName);
-  const totalRevenue = MOCK_ORDERS
+  const totalRevenue = farmerOrders
     .filter(o => o.status === 'Delivered' || o.status === 'Shipped')
     .reduce((sum, o) => sum + o.total, 0);
 
@@ -122,20 +156,28 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
 
   const handleSaveProduct = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!formData.stock || formData.stock < 1) {
+      addNotification("Invalid Stock", "Product stock must be at least 1.", "info");
+      return;
+    }
+
     if (editingProduct) {
       const updated = products.map(p => p.id === editingProduct.id ? { ...p, ...formData } as Product : p);
       onUpdateProducts(updated);
+      addNotification("Product Updated", `${formData.name} has been updated.`, "info");
     } else {
       const newProduct: Product = {
         ...formData,
         id: Math.random().toString(36).substr(2, 9),
         farmerName,
-        farmLocation: products.find(p => p.farmerName === farmerName)?.farmLocation || 'Local Farm',
+        farmLocation: user.location || products.find(p => p.farmerName === farmerName)?.farmLocation || 'Local Farm',
         rating: 5.0,
         reviews: [],
-        coordinates: products.find(p => p.farmerName === farmerName)?.coordinates || { lat: 20.5937, lng: 78.9629 },
+        coordinates: user.coordinates || products.find(p => p.farmerName === farmerName)?.coordinates || { lat: 20.5937, lng: 78.9629 },
       } as Product;
       onUpdateProducts([...products, newProduct]);
+      addNotification("Product Added", `${formData.name} is now live in the marketplace!`, "info");
     }
     setIsAddModalOpen(false);
     setEditingProduct(null);
@@ -176,6 +218,33 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
     }
   };
 
+  const handleOrderPickup = async (order: any) => {
+    if (!order.email) {
+      addNotification("Error", "No customer email found for this order.", "info");
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/orders/pickup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.id,
+          email: order.email,
+          customerName: order.customer
+        })
+      });
+      if (response.ok) {
+        addNotification("Order Picked Up", "Confirmation email sent to customer!", "info");
+      } else {
+        addNotification("Error", "Failed to send pickup email.", "info");
+      }
+    } catch (e) {
+      console.error(e);
+      addNotification("Error", "Error sending pickup email.", "info");
+    }
+  };
+
   const startCamera = async () => {
     try {
       // Try to get the environment (back) camera first
@@ -196,7 +265,7 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
       }
     } catch (err) {
       console.error("Error accessing camera:", err);
-      alert("Could not access camera. Please ensure you have a camera connected and have given permission.");
+      addNotification("Camera Error", "Could not access camera. Please ensure you have a camera connected and have given permission.", "info");
     }
   };
 
@@ -240,7 +309,15 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
           )}
           <div>
             <h1 className="text-4xl font-serif font-bold">{t.farmDashboard}</h1>
-            <p className="text-brand-ink/60">{t.manageHarvest}</p>
+            <div className="flex items-center gap-2 text-brand-ink/60">
+              <MapPin size={14} />
+              <button 
+                onClick={() => setIsLocationModalOpen(true)}
+                className="text-sm hover:text-brand-olive hover:underline transition-colors"
+              >
+                {user.location || "Set Farm Location"}
+              </button>
+            </div>
           </div>
         </div>
         <button 
@@ -254,9 +331,9 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard icon={<DollarSign className="text-emerald-600" />} label={t.totalRevenue} value={`₹${totalRevenue.toFixed(2)}`} trend={`+12% ${t.fromLastWeek}`} />
-        <StatCard icon={<ShoppingBag className="text-blue-600" />} label={t.totalOrders} value={MOCK_ORDERS.length.toString()} trend={`+5 ${t.newToday}`} />
+        <StatCard icon={<ShoppingBag className="text-blue-600" />} label={t.totalOrders} value={farmerOrders.length.toString()} trend={`+5 ${t.newToday}`} />
         <StatCard icon={<Package className="text-orange-600" />} label={t.activeProducts} value={farmerProducts.length.toString()} trend={t.allInStock} />
-        <StatCard icon={<TrendingUp className="text-purple-600" />} label={t.avgOrderValue} value={`₹${(totalRevenue / MOCK_ORDERS.length || 0).toFixed(2)}`} trend={t.stable} />
+        <StatCard icon={<TrendingUp className="text-purple-600" />} label={t.avgOrderValue} value={`₹${(totalRevenue / (farmerOrders.length || 1)).toFixed(2)}`} trend={t.stable} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -397,10 +474,11 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
                 <th className="px-6 py-4 font-bold">{t.items}</th>
                 <th className="px-6 py-4 font-bold">{t.total}</th>
                 <th className="px-6 py-4 font-bold">{t.status}</th>
+                <th className="px-6 py-4 font-bold text-right">{t.actions}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-brand-ink/5">
-              {MOCK_ORDERS.map(order => (
+              {farmerOrders.map(order => (
                 <tr key={order.id} className="hover:bg-brand-cream/20 transition-colors">
                   <td className="px-6 py-4 font-mono text-xs font-bold">{order.id}</td>
                   <td className="px-6 py-4 font-medium">{order.customer}</td>
@@ -419,6 +497,16 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
                       {order.status === 'Processing' && <><Clock size={14} /> {t.processingStatus}</>}
                       {order.status === 'Cancelled' && <><XCircle size={14} /> {t.cancelled}</>}
                     </span>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    {order.deliveryMethod === 'pickup' && order.status !== 'Delivered' && (
+                      <button 
+                        onClick={() => handleOrderPickup(order)}
+                        className="flex items-center gap-1 ml-auto px-3 py-1.5 bg-brand-olive/10 text-brand-olive rounded-lg text-xs font-bold hover:bg-brand-olive/20 transition-all"
+                      >
+                        <Package size={14} /> Order Picked Up
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -531,10 +619,11 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
                     <input 
                       type="number" 
                       required
+                      min="1"
                       className="w-full px-4 py-3 bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20"
-                      value={isNaN(formData.stock || 0) ? '' : formData.stock}
+                      value={formData.stock === 0 || formData.stock === undefined ? '' : formData.stock}
                       onChange={e => {
-                        const val = parseInt(e.target.value);
+                        const val = e.target.value === '' ? 0 : parseInt(e.target.value);
                         setFormData({...formData, stock: isNaN(val) ? 0 : val});
                       }}
                     />
@@ -662,6 +751,143 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, products, onU
                   {editingProduct ? t.updateProduct : t.saveProduct}
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Farm Location Modal */}
+      <AnimatePresence>
+        {isLocationModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsLocationModalOpen(false)}
+              className="absolute inset-0 bg-brand-ink/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-md bg-brand-cream rounded-3xl shadow-2xl p-8"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-serif font-bold">Set Farm Location</h2>
+                <button onClick={() => setIsLocationModalOpen(false)} className="p-2 hover:bg-brand-ink/5 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-brand-ink/60 uppercase tracking-wider">Farm Address</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-ink/30" size={18} />
+                    <input 
+                      type="text" 
+                      placeholder="Enter your farm's address"
+                      className="w-full pl-10 pr-4 py-3 bg-white border border-brand-ink/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-olive/20"
+                      value={locationInput}
+                      onChange={e => setLocationInput(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    if (!locationInput.trim()) return;
+                    
+                    try {
+                      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(locationInput)}`);
+                      const data = await response.json();
+                      
+                      if (data && data.length > 0) {
+                        const coords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                        const updatedUser = { ...user, location: locationInput, coordinates: coords };
+                        onUpdateUser(updatedUser);
+                        
+                        // Update all existing products for this farmer
+                        const updatedProducts = products.map(p => 
+                          p.farmerName === farmerName 
+                            ? { ...p, farmLocation: locationInput, coordinates: coords } 
+                            : p
+                        );
+                        onUpdateProducts(updatedProducts);
+                        
+                        setIsLocationModalOpen(false);
+                        addNotification("Farm Location Updated", "Your farm location and products have been updated successfully!", "info");
+                      } else {
+                        addNotification("Location Error", "Could not find coordinates for this location.", "info");
+                      }
+                    } catch (error) {
+                      console.error("Geocoding error:", error);
+                      addNotification("Error", "Failed to get location coordinates.", "info");
+                    }
+                  }}
+                  className="w-full py-3 bg-brand-olive text-white rounded-xl font-bold hover:bg-brand-olive/90 transition-all shadow-lg shadow-brand-olive/20"
+                >
+                  Save Farm Location
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (navigator.geolocation) {
+                      navigator.geolocation.getCurrentPosition(
+                        async (position) => {
+                          const { latitude, longitude } = position.coords;
+                          try {
+                            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+                            const data = await response.json();
+                            const address = data.address?.city || data.address?.town || data.address?.village || data.address?.state || "Your Farm";
+                            
+                            const coords = { lat: latitude, lng: longitude };
+                            const updatedUser = { ...user, location: address, coordinates: coords };
+                            onUpdateUser(updatedUser);
+                            
+                            // Update all existing products for this farmer
+                            const updatedProducts = products.map(p => 
+                              p.farmerName === farmerName 
+                                ? { ...p, farmLocation: address, coordinates: coords } 
+                                : p
+                            );
+                            onUpdateProducts(updatedProducts);
+                            
+                            setLocationInput(address);
+                            setIsLocationModalOpen(false);
+                            addNotification("Location Detected", `Farm location detected: ${address}`, "info");
+                          } catch (error) {
+                            const coords = { lat: latitude, lng: longitude };
+                            const updatedUser = { ...user, location: "Your Farm", coordinates: coords };
+                            onUpdateUser(updatedUser);
+                            
+                            const updatedProducts = products.map(p => 
+                              p.farmerName === farmerName 
+                                ? { ...p, farmLocation: "Your Farm", coordinates: coords } 
+                                : p
+                            );
+                            onUpdateProducts(updatedProducts);
+                            
+                            setLocationInput("Your Farm");
+                            setIsLocationModalOpen(false);
+                            addNotification("Location Detected", "Farm location detected!", "info");
+                          }
+                        },
+                        (error) => {
+                          console.error("Geolocation error:", error);
+                          addNotification("Error", "Could not detect your location. Please check permissions.", "info");
+                        }
+                      );
+                    } else {
+                      addNotification("Error", "Geolocation is not supported by your browser.", "info");
+                    }
+                  }}
+                  className="w-full py-3 bg-brand-olive/10 text-brand-olive rounded-xl font-bold hover:bg-brand-olive/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <MapPin size={18} /> Use Current Location
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

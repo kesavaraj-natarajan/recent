@@ -30,7 +30,7 @@ export default function VoiceAssistant({ userRole, lang, onAction }: VoiceAssist
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = true;
-        recognition.lang = lang === 'ta' ? 'ta-IN' : (lang === 'hi' ? 'hi-IN' : 'en-US');
+        recognition.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
 
         recognition.onresult = (event: any) => {
           let currentTranscript = '';
@@ -81,8 +81,13 @@ export default function VoiceAssistant({ userRole, lang, onAction }: VoiceAssist
       try {
         recognitionRef.current?.start();
         setIsListening(true);
-      } catch (e) {
-        console.error(e);
+      } catch (e: any) {
+        if (e.name === 'InvalidStateError') {
+          // Already started
+          setIsListening(true);
+        } else {
+          console.error(e);
+        }
       }
     }
   };
@@ -149,7 +154,7 @@ Return JSON matching this schema:
       // Speak the reply
       if ('speechSynthesis' in window) {
         const utterance = new SpeechSynthesisUtterance(result.replyText);
-        utterance.lang = lang === 'ta' ? 'ta-IN' : (lang === 'hi' ? 'hi-IN' : 'en-US');
+        utterance.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
         window.speechSynthesis.speak(utterance);
       }
 

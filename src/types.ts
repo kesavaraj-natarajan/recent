@@ -12,7 +12,7 @@ export interface Product {
   name: string;
   price: number;
   unit: string;
-  category: 'Vegetables' | 'Fruits' | 'Grains' | 'Dairy' | 'Honey' | 'Herbs';
+  category: 'Vegetables' | 'Fruits' | 'Grains' | 'Dairy' | 'Honey' | 'Herbs' | 'Flowers';
   image: string;
   farmerName: string;
   farmerPhoto?: string;
