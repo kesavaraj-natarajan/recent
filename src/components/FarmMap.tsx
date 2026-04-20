@@ -36,9 +36,10 @@ interface FarmMapProps {
   onAddToCart: (product: Product) => void;
   userLocation?: { lat: number; lng: number; address: string } | null;
   searchRadius?: number;
+  userRole?: string;
 }
 
-export default function FarmMap({ products, onAddToCart, userLocation, searchRadius = 10 }: FarmMapProps) {
+export default function FarmMap({ products, onAddToCart, userLocation, searchRadius = 10, userRole }: FarmMapProps) {
   // Center the map around user location if available, else average location of products
   const center: [number, number] = userLocation 
     ? [userLocation.lat, userLocation.lng]
@@ -103,6 +104,7 @@ export default function FarmMap({ products, onAddToCart, userLocation, searchRad
                 <img 
                   src={product.image} 
                   alt={product.name} 
+                  referrerPolicy="no-referrer"
                   className="w-full h-24 object-cover rounded-lg mb-2"
                 />
                 <h3 className="font-serif font-bold text-brand-ink">{product.name}</h3>
@@ -111,12 +113,14 @@ export default function FarmMap({ products, onAddToCart, userLocation, searchRad
                 </p>
                 <div className="flex justify-between items-center mt-2">
                   <span className="font-bold text-brand-olive">₹{product.price.toFixed(2)}</span>
-                  <button 
-                    onClick={() => onAddToCart(product)}
-                    className="p-2 bg-brand-olive text-white rounded-full hover:bg-brand-olive/90 transition-all"
-                  >
-                    <ShoppingCart size={14} />
-                  </button>
+                  {userRole !== 'farmer' && (
+                    <button 
+                      onClick={() => onAddToCart(product)}
+                      className="p-2 bg-brand-olive text-white rounded-full hover:bg-brand-olive/90 transition-all"
+                    >
+                      <ShoppingCart size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
             </Popup>

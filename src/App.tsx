@@ -70,6 +70,7 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [isDataFetched, setIsDataFetched] = useState(false);
   
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -79,7 +80,14 @@ export default function App() {
   const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'model', content: string }[]>([]);
   const [aiInput, setAiInput] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [view, setView] = useState<'marketplace' | 'dashboard'>('marketplace');
+  const [view, setView] = useState<'marketplace' | 'dashboard'>(() => {
+    const savedUser = localStorage.getItem('farm2homeUser');
+    if (savedUser) {
+      const parsed = JSON.parse(savedUser);
+      return parsed.role === 'farmer' ? 'dashboard' : 'marketplace';
+    }
+    return 'marketplace';
+  });
   const [priceRange, setPriceRange] = useState<[number, number]>([0, 1000]);
   const [sortBy, setSortBy] = useState<'name' | 'price-asc' | 'price-desc'>('name');
   const [comparisonList, setComparisonList] = useState<Product[]>([]);
@@ -99,6 +107,7 @@ export default function App() {
   const [isInboxOpen, setIsInboxOpen] = useState(false);
   const [isOrderHistoryOpen, setIsOrderHistoryOpen] = useState(false);
   const [isOrderTrackingOpen, setIsOrderTrackingOpen] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'upi' | 'netbanking'>('card');
   const [orders, setOrders] = useState<{ id: string; date: string; total: number; status: string; items: CartItem[], customer?: string }[]>([]);
@@ -121,6 +130,71 @@ export default function App() {
       localStorage.removeItem('farm2homeUser');
     }
   }, [user]);
+
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        const prodRes = await fetch('/api/products');
+        const prodData = await prodRes.json();
+        if (prodData.success && prodData.products.length > 0) {
+          setProducts(prodData.products);
+          setIsDataFetched(true);
+        }
+        
+        if (user?.email) {
+          const orderRes = await fetch(`/api/orders?email=${user.email}`);
+          const orderData = await orderRes.json();
+          if (orderData.success) {
+            setOrders(orderData.orders);
+          }
+          
+          const favRes = await fetch(`/api/favorites?email=${user.email}`);
+          const favData = await favRes.json();
+          if (favData.success) {
+            setFavoriteFarmers(favData.favorites);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch initial data:", err);
+      }
+    };
+    fetchInitialData();
+  }, [user?.email]);
+
+  const toggleFavoriteFarmer = async (product: Product) => {
+    if (!user) {
+      setIsAuthOpen(true);
+      return;
+    }
+
+    const isFavorite = favoriteFarmers.includes(product.farmerName);
+    
+    try {
+      if (isFavorite) {
+        setFavoriteFarmers(prev => prev.filter(f => f !== product.farmerName));
+        await fetch('/api/favorites', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: user.email, farmerName: product.farmerName })
+        });
+      } else {
+        setFavoriteFarmers(prev => [...prev, product.farmerName]);
+        await fetch('/api/favorites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            email: user.email, 
+            farmerName: product.farmerName,
+            farmerMobile: product.farmerMobile,
+            farmLocation: product.farmLocation
+          })
+        });
+        addNotification("Added to Favorites", `${product.farmerName} has been added to your favorite farmers.`, "info");
+      }
+    } catch (err) {
+      console.error("Failed to toggle favorite:", err);
+    }
+  };
 
   const categories = ['All', ...Array.from(new Set(products.map(p => p.category)))];
 
@@ -184,6 +258,10 @@ export default function App() {
   };
 
   const addToCart = (product: Product) => {
+    if (user?.role === 'farmer') {
+      addNotification("Notice", "Farmers cannot buy products. You are in preview mode as a seller.", "info");
+      return;
+    }
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
@@ -204,6 +282,10 @@ export default function App() {
   };
 
   const buyNow = (product: Product) => {
+    if (user?.role === 'farmer') {
+      addNotification("Notice", "Farmers cannot buy products.", "info");
+      return;
+    }
     addToCart(product);
     if (user) {
       setIsCheckoutOpen(true);
@@ -267,7 +349,7 @@ export default function App() {
     }
   };
 
-  const handleAddReview = (e: React.FormEvent) => {
+  const handleAddReview = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) {
       setIsAuthOpen(true);
@@ -284,19 +366,32 @@ export default function App() {
       date: new Date().toISOString().split('T')[0]
     };
 
-    const updatedProducts = products.map(p => {
-      if (p.id === selectedProductForReviews.id) {
-        const updatedReviews = [review, ...p.reviews];
-        const avgRating = updatedReviews.reduce((sum, r) => sum + r.rating, 0) / updatedReviews.length;
-        return { ...p, reviews: updatedReviews, rating: parseFloat(avgRating.toFixed(1)) };
-      }
-      return p;
-    });
+    try {
+      const response = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: selectedProductForReviews.id, review })
+      });
+      
+      if (response.ok) {
+        const updatedProducts = products.map(p => {
+          if (p.id === selectedProductForReviews.id) {
+            const updatedReviews = [review, ...p.reviews];
+            const avgRating = updatedReviews.reduce((sum, r) => sum + r.rating, 0) / updatedReviews.length;
+            return { ...p, reviews: updatedReviews, rating: parseFloat(avgRating.toFixed(1)) };
+          }
+          return p;
+        });
 
-    setProducts(updatedProducts);
-    setSelectedProductForReviews(updatedProducts.find(p => p.id === selectedProductForReviews.id) || null);
-    setNewReview({ rating: 5, comment: '', imageUrl: '' });
-    addNotification(t.reviewAdded, t.thankYouFeedback, "info");
+        setProducts(updatedProducts);
+        setSelectedProductForReviews(updatedProducts.find(p => p.id === selectedProductForReviews.id) || null);
+        setNewReview({ rating: 5, comment: '', imageUrl: '' });
+        addNotification(t.reviewAdded, t.thankYouFeedback, "info");
+      }
+    } catch (err) {
+      console.error("Failed to add review:", err);
+      addNotification("Error", "Failed to post review. Please try again.", "info");
+    }
   };
 
   const handleCheckout = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -335,6 +430,7 @@ export default function App() {
           city: city,
           zip_code: zipCode,
           product_name: productNames,
+          items_json: cart,
           total_amount: cartTotal + (deliveryMethod === 'home' ? 50 : 0),
           delivery_method: deliveryMethod,
           date_time: new Date().toISOString()
@@ -362,12 +458,21 @@ export default function App() {
     };
     setOrders(prev => [newOrder, ...prev]);
 
-    // If home delivery, update status to Delivered after 12 seconds
-    if (deliveryMethod === 'home') {
-      setTimeout(() => {
-        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'Delivered' } : o));
-      }, 12000);
-    }
+      // If home delivery, update status to Delivered after 12 seconds
+      if (deliveryMethod === 'home') {
+        setTimeout(async () => {
+          setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'Delivered' } : o));
+          try {
+            await fetch('/api/orders/status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, status: 'Delivered' })
+            });
+          } catch (e) {
+            console.error("Failed to update order status in Supabase:", e);
+          }
+        }, 12000);
+      }
 };
 
 const handleCancelOrder = (orderId: string) => {
@@ -416,8 +521,18 @@ const handleCancelOrder = (orderId: string) => {
         config: {
           systemInstruction: `You are Farm2Home AI, a helpful assistant for a farmer-to-consumer marketplace. 
           Help users find seasonal produce, suggest recipes based on available products, and explain the benefits of buying local.
-          Available products: ${JSON.stringify(products.map(p => ({ name: p.name, category: p.category, price: p.price, farmer: p.farmerName })))}
-          Keep responses concise, warm, and encouraging of local farming. Use markdown for formatting.`
+          Available products: ${JSON.stringify(products.map(p => ({ name: p.name, category: p.category, price: p.price, farmer: p.farmerName, unit: p.unit })))}
+          
+          SPECIFIC TASKS:
+          - If a user asks for prices (e.g., "today egg price"), look it up in the product list above and provide the exact match.
+          - If the product exists, format the response using a Markdown Table for clarity (Price Report).
+          - If the product doesn't exist, recommend the closest alternative or explain that it's currently unavailable from local farmers.
+          - Keep responses concise, warm, and encouraging. Use markdown for formatting.
+          
+          IMPORTANT: The user might speak in English or Tamil. 
+          1. If the user speaks in Tamil, reply in Tamil.
+          2. If the user speaks in English, reply in English.
+          3. If they mix both, reply in the language that seems most appropriate.`
         }
       });
 
@@ -436,28 +551,66 @@ const handleCancelOrder = (orderId: string) => {
   const handleVoiceAction = (result: any) => {
     const { action, payload } = result;
     
+    if (action === 'NAVIGATE') {
+      const page = payload.targetPage?.toLowerCase();
+      // Reset all toggles before navigating to a specific view
+      setIsCartOpen(false);
+      setIsOrderHistoryOpen(false);
+      setIsProfileOpen(false);
+      setIsInboxOpen(false);
+      setIsFavoritesOpen(false);
+      setIsOrderTrackingOpen(false);
+      setIsAiOpen(false);
+      setIsSupportOpen(false);
+
+      if (page === 'cart' && user?.role !== 'farmer') setIsCartOpen(true);
+      else if (page === 'home' || page === 'marketplace') { setView('marketplace'); setCurrentPage('home'); }
+      else if (page === 'about') { setView('marketplace'); setCurrentPage('about'); }
+      else if ((page === 'orders' || page === 'history') && user?.role !== 'farmer') setIsOrderHistoryOpen(true);
+      else if (page === 'profile' || page === 'account') setIsProfileOpen(true);
+      else if (page === 'inbox' || page === 'messages') setIsInboxOpen(true);
+      else if ((page === 'favorites' || page === 'saved') && user?.role !== 'farmer') setIsFavoritesOpen(true);
+      else if ((page === 'tracking' || page === 'delivery') && user?.role !== 'farmer') setIsOrderTrackingOpen(true);
+      else if (page === 'support' || page === 'help') setIsSupportOpen(true);
+      else if (page === 'dashboard' && user?.role === 'farmer') setView('dashboard');
+      else if (user?.role === 'farmer' && ['cart', 'orders', 'history', 'favorites', 'tracking'].includes(page)) {
+        addNotification("Action Restricted", "Farmers do not have access to consumer features.", "info");
+        return;
+      }
+      else setView('marketplace'); // Default fallback
+
+      addNotification("Navigation", `Opening ${page}...`, "info");
+      return;
+    }
+
     if (user?.role === 'farmer') {
+      // Navigate to dashboard if not already there for other farmer actions
+      if (view !== 'dashboard') {
+        setView('dashboard');
+      }
+      // Pass the command to the dashboard
       setVoiceCommand({ ...result, timestamp: Date.now() });
+      addNotification("Voice Command", result.replyText, "info");
     } else {
       if (action === 'SEARCH') {
         setSearchQuery(payload.searchTerm || '');
         setView('marketplace');
+        addNotification("Voice Search", `Searching for "${payload.searchTerm}"`, "info");
       } else if (action === 'ADD_TO_CART') {
         const product = products.find(p => p.name.toLowerCase().includes(payload.productName?.toLowerCase() || ''));
         if (product) {
           addToCart(product);
-          if (payload.quantity && payload.quantity > 1) {
-            for (let i = 1; i < payload.quantity; i++) {
+          const qty = payload.quantity || 1;
+          if (qty > 1) {
+            for (let i = 1; i < qty; i++) {
               addToCart(product);
             }
           }
+          addNotification(t.cartUpdated, `${qty}x ${product.name} ${t.addedToCart}`, "info");
+          setIsCartOpen(true);
+        } else {
+          addNotification("Product Not Found", `Could not find "${payload.productName}"`, "info");
         }
-      } else if (action === 'NAVIGATE') {
-        const page = payload.targetPage?.toLowerCase();
-        if (page === 'cart') setIsCartOpen(true);
-        else if (page === 'home' || page === 'marketplace') setView('marketplace');
-        else if (page === 'orders') setIsOrderHistoryOpen(true);
-        else if (page === 'profile') setIsProfileOpen(true);
       }
     }
   };
@@ -550,7 +703,12 @@ const handleCancelOrder = (orderId: string) => {
                     title={t.profile}
                   >
                     {user.profilePhoto ? (
-                      <img src={user.profilePhoto} alt="Profile" className="w-8 h-8 rounded-full object-cover border border-brand-ink/10" />
+                      <img 
+                      src={user.profilePhoto} 
+                      alt="Profile" 
+                      referrerPolicy="no-referrer"
+                      className="w-8 h-8 rounded-full object-cover border border-brand-ink/10" 
+                    />
                     ) : (
                       <User size={24} />
                     )}
@@ -565,7 +723,7 @@ const handleCancelOrder = (orderId: string) => {
                 </button>
               )}
               
-              {view === 'marketplace' && (
+              {view === 'marketplace' && user?.role !== 'farmer' && (
                 <div className="flex items-center gap-2">
                   {user?.role === 'consumer' && (
                     <>
@@ -652,7 +810,7 @@ const handleCancelOrder = (orderId: string) => {
               </ul>
               <div className="mt-12 pt-8 border-t border-brand-ink/10 text-center">
                 <button 
-                  onClick={() => setCurrentPage('home')}
+                  onClick={() => { setView('marketplace'); setCurrentPage('home'); }}
                   className="bg-brand-olive text-white px-8 py-4 rounded-full font-semibold hover:bg-brand-olive/90 transition-colors"
                 >
                   Back to Marketplace
@@ -901,12 +1059,7 @@ const handleCancelOrder = (orderId: string) => {
                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (favoriteFarmers.includes(product.farmerName)) {
-                            setFavoriteFarmers(prev => prev.filter(f => f !== product.farmerName));
-                          } else {
-                            setFavoriteFarmers(prev => [...prev, product.farmerName]);
-                            addNotification("Added to Favorites", `${product.farmerName} has been added to your favorite farmers.`, "info");
-                          }
+                          toggleFavoriteFarmer(product);
                         }}
                         className={cn(
                           "p-2 rounded-full backdrop-blur-md transition-all",
@@ -1008,7 +1161,12 @@ const handleCancelOrder = (orderId: string) => {
                           }}
                         >
                           {product.farmerPhoto ? (
-                            <img src={product.farmerPhoto} alt={product.farmerName} className="w-4 h-4 rounded-full object-cover" />
+                            <img 
+                              src={product.farmerPhoto} 
+                              alt={product.farmerName} 
+                              referrerPolicy="no-referrer"
+                              className="w-4 h-4 rounded-full object-cover" 
+                            />
                           ) : (
                             <MapPin size={12} />
                           )}
@@ -1021,12 +1179,7 @@ const handleCancelOrder = (orderId: string) => {
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (favoriteFarmers.includes(product.farmerName)) {
-                                setFavoriteFarmers(prev => prev.filter(f => f !== product.farmerName));
-                              } else {
-                                setFavoriteFarmers(prev => [...prev, product.farmerName]);
-                                addNotification("Added to Favorites", `${product.farmerName} has been added to your favorite farmers.`, "info");
-                              }
+                              toggleFavoriteFarmer(product);
                             }}
                             className={cn(
                               "ml-auto p-1 rounded-full transition-colors",
@@ -1057,40 +1210,64 @@ const handleCancelOrder = (orderId: string) => {
                           </div>
                           <span className="text-xs font-bold text-brand-ink/40">{product.rating} ({product.reviews.length})</span>
                         </div>
-                        <div className="flex gap-2">
-                          <button 
-                            onClick={() => addToCart(product)}
-                            className="flex-1 py-3 bg-brand-cream border border-brand-olive/20 text-brand-olive rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-brand-olive hover:text-white transition-all"
-                          >
-                            <Plus size={18} /> {t.basket}
-                          </button>
-                          <button 
-                            onClick={() => buyNow(product)}
-                            className="flex-1 py-3 bg-brand-olive text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-brand-olive/90 transition-all shadow-md shadow-brand-olive/10"
-                          >
-                            {t.buyNow}
-                          </button>
-                        </div>
+                        {user?.role !== 'farmer' && (
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => addToCart(product)}
+                              className="flex-1 py-3 bg-brand-cream border border-brand-olive/20 text-brand-olive rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-brand-olive hover:text-white transition-all"
+                            >
+                              <Plus size={18} /> {t.basket}
+                            </button>
+                            <button 
+                              onClick={() => buyNow(product)}
+                              className="flex-1 py-3 bg-brand-olive text-white rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-brand-olive/90 transition-all shadow-md shadow-brand-olive/10"
+                            >
+                              {t.buyNow}
+                            </button>
+                          </div>
+                        )}
+                        {user?.role === 'farmer' && (
+                          <div className="py-2 text-center text-brand-ink/40 text-xs italic border-t border-brand-ink/5 mt-2">
+                            Farmers can only view marketplace prices and products.
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   ))
                 ) : (
-                  <div className="col-span-full py-20 text-center">
-                    <div className="w-20 h-20 bg-brand-olive/5 rounded-full flex items-center justify-center mx-auto mb-4 text-brand-olive/20">
-                      <ShoppingBasket size={40} />
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="col-span-full py-20 px-6 text-center bg-brand-cream/30 border-2 border-dashed border-brand-olive/10 rounded-[2rem]"
+                  >
+                    <div className="w-20 h-20 bg-brand-olive/5 rounded-full flex items-center justify-center mx-auto mb-6 text-brand-olive/40">
+                      <Search size={40} />
                     </div>
-                    <h3 className="text-xl font-serif font-bold mb-2">
-                      {lang === 'en' ? 'No products found' : 'தயாரிப்புகள் எதுவும் கிடைக்கவில்லை'}
+                    <h3 className="text-2xl font-serif font-bold mb-3 text-brand-ink">
+                      {lang === 'en' ? 'Oops! No matches found' : 'மன்னிக்கவும்! பொருத்தங்கள் எதுவும் இல்லை'}
                     </h3>
-                    <p className="text-brand-ink/60">
-                      {lang === 'en' ? 'Try adjusting your filters or search query.' : 'உங்கள் வடிப்பான்கள் அல்லது தேடல் வினவலை சரிசெய்ய முயற்சிக்கவும்.'}
+                    <p className="text-brand-ink/60 max-w-md mx-auto mb-8">
+                      {lang === 'en' 
+                        ? "We couldn't find anything matching your current search or filters. Try searching for something else or clearing your filters." 
+                        : "உங்கள் தற்போதைய தேடல் அல்லது வடிப்பான்களுடன் பொருந்தக்கூடிய எதையும் எங்களால் கண்டுபிடிக்க முடியவில்லை. வேறு எதையாவது தேட முயற்சிக்கவும்."}
                     </p>
-                  </div>
+                    <button 
+                      onClick={() => {
+                        setSearchQuery('');
+                        setSelectedCategory('All');
+                        setPriceRange([0, 2000]);
+                        setMinRating(0);
+                      }}
+                      className="px-6 py-3 bg-brand-olive text-white rounded-xl font-bold hover:shadow-lg transition-all"
+                    >
+                      {lang === 'en' ? 'View All Fresh Produce' : 'அனைத்து தயாரிப்புகளையும் காண்க'}
+                    </button>
+                  </motion.div>
                 )}
               </AnimatePresence>
             </div>
           ) : (
-            <FarmMap products={filteredProducts} onAddToCart={addToCart} userLocation={userLocation} searchRadius={searchRadius} />
+            <FarmMap products={filteredProducts} onAddToCart={addToCart} userLocation={userLocation} searchRadius={searchRadius} userRole={user?.role} />
           )}
         </section>
           </>
@@ -1181,7 +1358,12 @@ const handleCancelOrder = (orderId: string) => {
                     {cart.map(item => (
                       <div key={item.id} className="flex gap-4">
                         <div className="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0">
-                          <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                          <img 
+                            src={item.image} 
+                            alt={item.name} 
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover" 
+                          />
                         </div>
                         <div className="flex-1">
                           <div className="flex justify-between mb-1">
@@ -2046,7 +2228,12 @@ const handleCancelOrder = (orderId: string) => {
                 <div className="flex items-center gap-3">
                   <div className="relative group cursor-pointer">
                     {user.profilePhoto ? (
-                      <img src={user.profilePhoto} alt="Profile" className="w-12 h-12 rounded-full object-cover border-2 border-brand-olive" />
+                      <img 
+                        src={user.profilePhoto} 
+                        alt="Profile" 
+                        referrerPolicy="no-referrer"
+                        className="w-12 h-12 rounded-full object-cover border-2 border-brand-olive" 
+                      />
                     ) : (
                       <div className="w-12 h-12 bg-brand-olive text-white rounded-full flex items-center justify-center">
                         <User size={24} />
@@ -2249,7 +2436,11 @@ const handleCancelOrder = (orderId: string) => {
             >
               <div className="p-6 border-b border-brand-ink/10 flex justify-between items-center bg-white">
                 <div className="flex items-center gap-4">
-                  <img src={selectedProductForReviews.image} className="w-12 h-12 rounded-xl object-cover" />
+                  <img 
+                    src={selectedProductForReviews.image} 
+                    referrerPolicy="no-referrer"
+                    className="w-12 h-12 rounded-xl object-cover" 
+                  />
                   <div>
                     <h2 className="text-xl font-serif font-bold">{selectedProductForReviews.name}</h2>
                     <div className="flex items-center gap-2">
@@ -2328,7 +2519,12 @@ const handleCancelOrder = (orderId: string) => {
                       </label>
                       {newReview.imageUrl && (
                         <div className="relative w-12 h-12 rounded overflow-hidden">
-                          <img src={newReview.imageUrl} alt="Preview" className="w-full h-full object-cover" />
+                          <img 
+                            src={newReview.imageUrl} 
+                            alt="Preview" 
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover" 
+                          />
                           <button 
                             type="button"
                             onClick={() => setNewReview({ ...newReview, imageUrl: '' })}
@@ -2376,7 +2572,12 @@ const handleCancelOrder = (orderId: string) => {
                         <p className="text-sm text-brand-ink/70 leading-relaxed">{review.comment}</p>
                         {review.imageUrl && (
                           <div className="mt-3 rounded-xl overflow-hidden max-w-xs">
-                            <img src={review.imageUrl} alt="Review" className="w-full h-auto object-cover" />
+                            <img 
+                              src={review.imageUrl} 
+                              alt="Review" 
+                              referrerPolicy="no-referrer"
+                              className="w-full h-auto object-cover" 
+                            />
                           </div>
                         )}
                       </div>
@@ -2697,7 +2898,12 @@ const handleCancelOrder = (orderId: string) => {
               <div className="p-8 flex flex-col items-center text-center">
                 <div className="relative mb-6">
                   {selectedFarmer.farmerPhoto ? (
-                    <img src={selectedFarmer.farmerPhoto} alt={selectedFarmer.farmerName} className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg" />
+                    <img 
+                      src={selectedFarmer.farmerPhoto} 
+                      alt={selectedFarmer.farmerName} 
+                      referrerPolicy="no-referrer"
+                      className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg" 
+                    />
                   ) : (
                     <div className="w-32 h-32 rounded-full bg-brand-olive/10 flex items-center justify-center text-brand-olive border-4 border-white shadow-lg">
                       <User size={64} />
@@ -2773,6 +2979,78 @@ const handleCancelOrder = (orderId: string) => {
         )}
       </AnimatePresence>
 
+      {/* Support Modal */}
+      <AnimatePresence>
+        {isSupportOpen && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSupportOpen(false)}
+              className="absolute inset-0 bg-brand-ink/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-brand-cream rounded-[32px] shadow-2xl overflow-hidden flex flex-col p-8"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-2xl font-serif font-bold">{t.support || 'Help & Support'}</h2>
+                  <p className="text-sm text-brand-ink/40">{lang === 'en' ? 'Get in touch with our team' : 'எங்கள் குழுவுடன் தொடர்பு கொள்ளுங்கள்'}</p>
+                </div>
+                <button onClick={() => setIsSupportOpen(false)} className="p-2 hover:bg-brand-ink/5 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 bg-white rounded-2xl border border-brand-ink/5 shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center">
+                      <Phone size={24} />
+                    </div>
+                    <div>
+                      <p className="font-bold">{lang === 'en' ? 'Call Support' : 'ஆதரவை அழைக்கவும்'}</p>
+                      <p className="text-sm text-brand-ink/40">1-800-FARM-HELP</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-brand-ink/5 shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-brand-olive/10 text-brand-olive rounded-full flex items-center justify-center">
+                      <Mail size={24} />
+                    </div>
+                    <div>
+                      <p className="font-bold">{lang === 'en' ? 'Email Us' : 'எங்களுக்கு மின்னஞ்சல் அனுப்புங்கள்'}</p>
+                      <p className="text-sm text-brand-ink/40">support@farm2home.com</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-brand-ink/5 shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center">
+                      <HelpCircle size={24} />
+                    </div>
+                    <div>
+                      <p className="font-bold">{lang === 'en' ? 'Frequently Asked Questions' : 'அடிக்கடி கேட்கப்படும் கேள்விகள்'}</p>
+                      <p className="text-sm text-brand-ink/40">{lang === 'en' ? 'Browse our help guides' : 'எங்கள் உதவி வழிகாட்டிகளை உலாவவும்'}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-8 p-6 bg-brand-ink text-white rounded-[2rem] text-center">
+                <p className="font-serif italic text-lg mb-2">"{lang === 'en' ? 'We are here to help you grow!' : 'உங்களை வளர உதவ நாங்கள் இங்கே இருக்கிறோம்!'}"</p>
+                <p className="text-xs text-white/40 uppercase tracking-widest">— Farm2Home Team</p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Auth Modal */}
       <AnimatePresence>
         {isAuthOpen && (
@@ -2782,6 +3060,9 @@ const handleCancelOrder = (orderId: string) => {
             onSuccess={(userData) => {
               setUser(userData);
               setIsAuthOpen(false);
+              if (userData.role === 'farmer') {
+                setView('dashboard');
+              }
               addNotification("Welcome to Farm2Home!", `Signed in as ${userData.name}`, "info");
             }} 
           />

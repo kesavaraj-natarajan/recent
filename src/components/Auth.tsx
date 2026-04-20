@@ -199,6 +199,14 @@ export default function Auth({ onClose, onSuccess, lang }: AuthProps) {
         setVerificationType('register');
         setIsOtpVerification(true);
         setOtp(['', '', '', '']);
+        
+        if (data.simulated) {
+          setError(`Notice: Email simulation is active because SMTP secrets are not set in the platform menu. Your code is: ${data.otp}`);
+          // Auto-fill OTP for user convenience during simulation
+          if (data.otp && data.otp.length === 4) {
+            setOtp(data.otp.split(''));
+          }
+        }
         return;
       }
 

@@ -126,15 +126,14 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
     if (voiceCommand) {
       const { action, payload } = voiceCommand;
       if (action === 'ADD_PRODUCT') {
-        setFormData({
-          name: payload.productName || '',
-          price: payload.price || 0,
-          unit: 'kg',
-          category: payload.category || 'Vegetables',
-          description: '',
-          stock: payload.stock || 0,
-          image: getDefaultProductImage(payload.productName || '', payload.category || 'Vegetables')
-        });
+        setFormData(prev => ({
+          ...prev,
+          name: payload.productName || prev.name || '',
+          price: payload.price || prev.price || 0,
+          category: payload.category || prev.category || 'Vegetables',
+          stock: payload.stock || prev.stock || 0,
+          image: payload.productName ? getDefaultProductImage(payload.productName, payload.category || 'Vegetables') : prev.image
+        }));
         setIsAddModalOpen(true);
       } else if (action === 'UPDATE_PRODUCT') {
         const product = farmerProducts.find(p => p.name.toLowerCase().includes(payload.productName?.toLowerCase() || ''));
@@ -154,7 +153,7 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
     }
   }, [voiceCommand]);
 
-  const handleSaveProduct = (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.stock || formData.stock < 1) {
@@ -162,28 +161,56 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
       return;
     }
 
-    if (editingProduct) {
-      const updated = products.map(p => p.id === editingProduct.id ? { ...p, ...formData } as Product : p);
-      onUpdateProducts(updated);
-      addNotification("Product Updated", `${formData.name} has been updated.`, "info");
-    } else {
-      const newProduct: Product = {
-        ...formData,
-        id: Math.random().toString(36).substr(2, 9),
-        farmerName,
-        farmLocation: user.location || products.find(p => p.farmerName === farmerName)?.farmLocation || 'Local Farm',
-        rating: 5.0,
-        reviews: [],
-        coordinates: user.coordinates || products.find(p => p.farmerName === farmerName)?.coordinates || { lat: 20.5937, lng: 78.9629 },
-      } as Product;
-      onUpdateProducts([...products, newProduct]);
-      addNotification("Product Added", `${formData.name} is now live in the marketplace!`, "info");
+    try {
+      if (editingProduct) {
+        // For updates, we should ideally have a PUT endpoint, but for now we'll update locally and sync
+        // In a real app, you'd send a PUT request to /api/products/:id
+        const updatedProduct = { ...editingProduct, ...formData } as Product;
+        const updated = products.map(p => p.id === editingProduct.id ? updatedProduct : p);
+        onUpdateProducts(updated);
+        
+        // Sync to Supabase via general endpoint if it supports upsert or specific update endpoint
+        await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedProduct)
+        });
+        
+        addNotification("Product Updated", `${formData.name} has been updated.`, "info");
+      } else {
+        const newProduct: Product = {
+          ...formData,
+          id: Math.random().toString(36).substr(2, 9),
+          farmerName,
+          farmLocation: user.location || products.find(p => p.farmerName === farmerName)?.farmLocation || 'Local Farm',
+          rating: 5.0,
+          reviews: [],
+          coordinates: user.coordinates || products.find(p => p.farmerName === farmerName)?.coordinates || { lat: 20.5937, lng: 78.9629 },
+        } as Product;
+
+        const response = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newProduct)
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          onUpdateProducts([...products, data.product || newProduct]);
+          addNotification("Product Added", `${formData.name} is now live in the marketplace!`, "info");
+        } else {
+          throw new Error("Failed to save product");
+        }
+      }
+      setIsAddModalOpen(false);
+      setEditingProduct(null);
+      setIsImageManuallyEdited(false);
+      stopCamera();
+      resetForm();
+    } catch (err: any) {
+      console.error(err);
+      addNotification("Error", "Failed to save product to database.", "info");
     }
-    setIsAddModalOpen(false);
-    setEditingProduct(null);
-    setIsImageManuallyEdited(false);
-    stopCamera();
-    resetForm();
   };
 
   const handleDeleteProduct = (id: string) => {
@@ -301,7 +328,12 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           {farmerPhoto ? (
-            <img src={farmerPhoto} alt={farmerName} className="w-16 h-16 rounded-full object-cover border-2 border-brand-olive shadow-sm" />
+            <img 
+              src={farmerPhoto} 
+              alt={farmerName} 
+              referrerPolicy="no-referrer"
+              className="w-16 h-16 rounded-full object-cover border-2 border-brand-olive shadow-sm" 
+            />
           ) : (
             <div className="w-16 h-16 rounded-full bg-brand-olive/10 flex items-center justify-center text-brand-olive border-2 border-brand-olive/20">
               <span className="text-2xl font-serif font-bold">{farmerName.charAt(0)}</span>
@@ -369,7 +401,12 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
               <div key={p.id} className="flex items-center justify-between p-3 bg-brand-cream rounded-xl">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0">
-                    <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
+                    <img 
+                      src={p.image} 
+                      alt={p.name} 
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover" 
+                    />
                   </div>
                   <div>
                     <p className="text-sm font-bold">{p.name}</p>
@@ -410,7 +447,11 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
                 <tr key={product.id} className="hover:bg-brand-cream/20 transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
-                      <img src={product.image} className="w-10 h-10 rounded-lg object-cover" />
+                      <img 
+                        src={product.image} 
+                        referrerPolicy="no-referrer"
+                        className="w-10 h-10 rounded-lg object-cover" 
+                      />
                       <span className="font-bold">{product.name}</span>
                     </div>
                   </td>
@@ -662,7 +703,12 @@ export default function FarmerDashboard({ farmerName, farmerPhoto, user, onUpdat
                         ) : (
                           <>
                             {formData.image ? (
-                              <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
+                              <img 
+                                src={formData.image} 
+                                alt="Preview" 
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover" 
+                              />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-brand-ink/20">
                                 <ImageIcon size={48} />

@@ -9,7 +9,6 @@ const PRODUCT_IMAGE_MAPPING: Record<string, string> = {
   'apple': 'https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?auto=format&fit=crop&q=80&w=800',
   'honey': 'https://images.unsplash.com/photo-1587049352846-4a222e784d38?auto=format&fit=crop&q=80&w=800',
   'milk': 'https://images.unsplash.com/photo-1563636619-e9108b455242?auto=format&fit=crop&q=80&w=800',
-  'wheat': 'https://images.unsplash.com/photo-1501430654243-c93fce111d99?auto=format&fit=crop&q=80&w=800',
   'rice': 'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&q=80&w=800',
   'basil': 'https://images.unsplash.com/photo-1618375531912-97cc58584191?auto=format&fit=crop&q=80&w=800',
   'mint': 'https://images.unsplash.com/photo-1594761053847-d56023b8e768?auto=format&fit=crop&q=80&w=800',
@@ -18,8 +17,12 @@ const PRODUCT_IMAGE_MAPPING: Record<string, string> = {
   'potato': 'https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&q=80&w=800',
   'onion': 'https://images.unsplash.com/photo-1508747703725-719777637510?auto=format&fit=crop&q=80&w=800',
   'garlic': 'https://images.unsplash.com/photo-1589927986089-35812388d1f4?auto=format&fit=crop&q=80&w=800',
-  'ginger': 'https://images.unsplash.com/photo-1599940824399-b87987ceb72a?auto=format&fit=crop&q=80&w=800',
+  'ginger': 'https://images.unsplash.com/photo-1599566150163-29194dcaad36?auto=format&fit=crop&q=80&w=800',
   'turmeric': 'https://images.unsplash.com/photo-1615485242231-8286bc92e9c2?auto=format&fit=crop&q=80&w=800',
+  'curry leaves': 'https://images.unsplash.com/photo-1567375698348-5d9d5ae99de0?auto=format&fit=crop&q=80&w=800',
+  'jasmine': 'https://images.unsplash.com/photo-1596701062351-8c2c14d1fcd0?auto=format&fit=crop&q=80&w=800',
+  'malli': 'https://images.unsplash.com/photo-1596701062351-8c2c14d1fcd0?auto=format&fit=crop&q=80&w=800',
+  'wheat': 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&q=80&w=800',
 };
 
 const CATEGORY_IMAGE_MAPPING: Record<string, string> = {

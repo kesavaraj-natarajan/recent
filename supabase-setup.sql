@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS public.orders (
     city TEXT NOT NULL,
     zip_code TEXT NOT NULL,
     product_name TEXT NOT NULL,
+    items_json JSONB,
     total_amount NUMERIC NOT NULL,
     delivery_method TEXT DEFAULT 'pickup' NOT NULL,
     date_time TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -78,18 +79,35 @@ ALTER TABLE public.favorite_farmers ENABLE ROW LEVEL SECURITY;
 
 -- Create policies that allow anyone to insert/select (for prototype purposes)
 -- In a production app, you would restrict these based on auth.uid()
+
+-- Users
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.users;
+DROP POLICY IF EXISTS "Enable select for all users" ON public.users;
 CREATE POLICY "Enable insert for all users" ON public.users FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable select for all users" ON public.users FOR SELECT USING (true);
 
+-- Products
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.products;
+DROP POLICY IF EXISTS "Enable select for all users" ON public.products;
 CREATE POLICY "Enable insert for all users" ON public.products FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable select for all users" ON public.products FOR SELECT USING (true);
 
+-- Orders
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.orders;
+DROP POLICY IF EXISTS "Enable select for all users" ON public.orders;
 CREATE POLICY "Enable insert for all users" ON public.orders FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable select for all users" ON public.orders FOR SELECT USING (true);
 
+-- Reviews
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.reviews;
+DROP POLICY IF EXISTS "Enable select for all users" ON public.reviews;
 CREATE POLICY "Enable insert for all users" ON public.reviews FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable select for all users" ON public.reviews FOR SELECT USING (true);
 
+-- Favorite Farmers
+DROP POLICY IF EXISTS "Enable insert for all users" ON public.favorite_farmers;
+DROP POLICY IF EXISTS "Enable select for all users" ON public.favorite_farmers;
+DROP POLICY IF EXISTS "Enable delete for all users" ON public.favorite_farmers;
 CREATE POLICY "Enable insert for all users" ON public.favorite_farmers FOR INSERT WITH CHECK (true);
 CREATE POLICY "Enable select for all users" ON public.favorite_farmers FOR SELECT USING (true);
 CREATE POLICY "Enable delete for all users" ON public.favorite_farmers FOR DELETE USING (true);

@@ -30,7 +30,13 @@ export default function VoiceAssistant({ userRole, lang, onAction }: VoiceAssist
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = true;
+        // Set language based on current app language
         recognition.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
+
+        recognition.onstart = () => {
+          console.log('Speech recognition started');
+          setFeedback(lang === 'ta' ? 'கேட்கிறேன்...' : 'Listening...');
+        };
 
         recognition.onresult = (event: any) => {
           let currentTranscript = '';
@@ -41,31 +47,49 @@ export default function VoiceAssistant({ userRole, lang, onAction }: VoiceAssist
         };
 
         recognition.onerror = (event: any) => {
+          // Suppress console error for 'no-speech' as it's a common timeout
           if (event.error !== 'no-speech') {
-            console.error('Speech recognition error', event.error);
+            console.error('Speech recognition error:', event.error);
           }
+          
           setIsListening(false);
+          
           if (event.error === 'not-allowed') {
-            setFeedback('Microphone access denied. Please allow microphone permissions.');
+            setFeedback(lang === 'ta' ? 'மைக்ரோபோன் அனுமதி மறுக்கப்பட்டது. தயவுசெய்து அனுமதியை சரிபார்க்கவும்.' : 'Microphone access denied. Please check your browser permissions.');
           } else if (event.error === 'no-speech') {
-            setFeedback('No speech detected. Please try again.');
+            setFeedback(lang === 'ta' ? 'குரல் கண்டறியப்படவில்லை. மீண்டும் முயற்சிக்கவும்.' : 'Voice not detected. Please try again.');
+          } else if (event.error === 'network') {
+            setFeedback(lang === 'ta' ? 'பிணைய பிழை. உங்கள் இணைய இணைப்பைச் சரிபார்க்கவும்.' : 'Network error. Please check your internet connection.');
           } else {
-            setFeedback('Sorry, I could not hear you clearly.');
+            setFeedback(lang === 'ta' ? 'மன்னிக்கவும், என்னால் தெளிவாக கேட்க முடியவில்லை.' : 'Sorry, I could not hear you clearly.');
           }
-          setTimeout(() => setFeedback(''), 3000);
+          
+          // Don't clear feedback immediately if it's a no-speech error, 
+          // let the user see it and potentially retry
+          if (event.error !== 'no-speech') {
+            setTimeout(() => {
+              if (!isProcessing) setFeedback('');
+            }, 4000);
+          }
         };
 
         recognition.onend = () => {
+          console.log('Speech recognition ended');
           setIsListening(false);
         };
 
         recognitionRef.current = recognition;
+
+        return () => {
+          recognition.stop();
+        };
       }
     }
   }, [lang]);
 
   useEffect(() => {
-    if (!isListening && transcript && !isProcessing) {
+    // Process when user stops speaking (isListening becomes false) and we have a transcript
+    if (!isListening && transcript.trim() && !isProcessing) {
       processCommand(transcript);
     }
   }, [isListening, transcript]);
@@ -78,31 +102,60 @@ export default function VoiceAssistant({ userRole, lang, onAction }: VoiceAssist
       setTranscript('');
       setFeedback('');
       setIsOpen(true);
+      
+      if (!recognitionRef.current) {
+        setFeedback(lang === 'ta' ? 'உங்கள் உலாவி குரல் அங்கீகாரத்தை ஆதரிக்கவில்லை.' : 'Your browser does not support speech recognition.');
+        return;
+      }
+
       try {
-        recognitionRef.current?.start();
+        recognitionRef.current.start();
         setIsListening(true);
       } catch (e: any) {
+        console.error('Failed to start recognition:', e);
+        // If already started, just update state
         if (e.name === 'InvalidStateError') {
-          // Already started
           setIsListening(true);
         } else {
-          console.error(e);
+          setFeedback('Error starting microphone.');
         }
       }
     }
   };
 
   const processCommand = async (command: string) => {
+    if (!process.env.GEMINI_API_KEY) {
+      setFeedback('Gemini API key is missing.');
+      return;
+    }
+
     setIsProcessing(true);
-    setFeedback('Processing...');
+    setFeedback(lang === 'ta' ? 'செயலாக்குகிறது...' : 'Processing...');
+    
     try {
       const systemInstruction = `You are a helpful voice assistant for an agriculture marketplace app called Farm2Home.
 The user is a ${userRole || 'guest'}.
-Parse their voice command into a JSON object.
-Available actions for farmer: ADD_PRODUCT, UPDATE_PRODUCT, DELETE_PRODUCT, NAVIGATE.
-Available actions for consumer: SEARCH, ADD_TO_CART, NAVIGATE.
-If the command is not understood, use action UNKNOWN.
-IMPORTANT: The user might speak in English, Hindi, or Tamil. You must reply in the same language they used.
+The current app language is ${lang === 'ta' ? 'Tamil' : 'English'}.
+
+Available actions for farmer: 
+- ADD_PRODUCT: When farmer wants to add a new item. Try to extract productName, price, stock, category.
+- UPDATE_PRODUCT: When farmer wants to edit an existing item. Extract productName and updated fields.
+- DELETE_PRODUCT: When farmer wants to remove an item. Extract productName.
+- NAVIGATE: targetPage can be 'dashboard', 'orders', 'profile', 'inbox'.
+
+Available actions for consumer: 
+- SEARCH: Extract searchTerm.
+- ADD_TO_CART: When consumer wants to buy something. Extract productName, quantity. Try to find the closest product name.
+- NAVIGATE: targetPage can be 'marketplace', 'cart', 'orders', 'profile', 'inbox', 'favorites', 'tracking', 'support', 'about'.
+
+If the user request is incomplete for adding a product (e.g. "I want to add tomatoes" but no price), the "replyText" should acknowledge what was captured and ask for the specific missing details (e.g. "Sure, what's the price for tomatoes?").
+
+- If user asks for prices (e.g. "what is the price of honey" or "தேன் விலை என்ன"), the "replyText" should clearly state the current price from the marketplace data.
+
+IMPORTANT: The user might speak in English or Tamil. 
+1. If the user speaks in Tamil, the "replyText" MUST be in Tamil.
+2. If the user speaks in English, the "replyText" MUST be in English.
+3. If they mix both, reply in the language that seems most appropriate.
 
 Return JSON matching this schema:
 {
@@ -114,17 +167,17 @@ Return JSON matching this schema:
     "category": "string (optional)",
     "quantity": "number (optional)",
     "searchTerm": "string (optional)",
-    "targetPage": "string (optional, e.g., 'home', 'cart', 'dashboard', 'orders')"
+    "targetPage": "string (optional)"
   },
-  "replyText": "A short, friendly spoken response confirming the action or asking for clarification, in the same language as the user's command."
+  "replyText": "A short, friendly spoken response."
 }`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: "gemini-3-flash-preview",
         contents: command,
         config: {
           systemInstruction,
-          responseMimeType: 'application/json',
+          responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -143,35 +196,39 @@ Return JSON matching this schema:
               },
               replyText: { type: Type.STRING }
             },
-            required: ['action', 'payload', 'replyText']
+            required: ["action", "payload", "replyText"]
           }
         }
       });
 
-      const result = JSON.parse(response.text || '{}');
-      setFeedback(result.replyText || 'Done.');
+      const parsedResult = JSON.parse(response.text || '{}');
+      setFeedback(parsedResult.replyText || 'Done.');
       
       // Speak the reply
       if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(result.replyText);
-        utterance.lang = lang === 'ta' ? 'ta-IN' : 'en-US';
+        const utterance = new SpeechSynthesisUtterance(parsedResult.replyText);
+        
+        // Simple detection: if reply contains Tamil characters, use ta-IN
+        const hasTamil = /[\u0B80-\u0BFF]/.test(parsedResult.replyText);
+        utterance.lang = hasTamil ? 'ta-IN' : 'en-US';
+        
         window.speechSynthesis.speak(utterance);
       }
 
       // Execute action
-      if (result.action !== 'UNKNOWN') {
-        onAction(result);
+      if (parsedResult.action !== 'UNKNOWN') {
+        onAction(parsedResult);
       }
 
       setTimeout(() => {
         setIsOpen(false);
         setTranscript('');
         setFeedback('');
-      }, 4000);
+      }, 5000);
 
     } catch (error) {
       console.error('Error processing voice command:', error);
-      setFeedback('Sorry, there was an error processing your command.');
+      setFeedback(lang === 'ta' ? 'மன்னிக்கவும், உங்கள் கட்டளையைச் செயலாக்குவதில் பிழை ஏற்பட்டது.' : 'Sorry, there was an error processing your command.');
       setTimeout(() => setIsOpen(false), 3000);
     } finally {
       setIsProcessing(false);
@@ -215,16 +272,27 @@ Return JSON matching this schema:
             </div>
             
             <div className="p-6">
-              <div className="min-h-[60px] flex items-center justify-center text-center">
+              <div className="min-h-[80px] flex flex-col items-center justify-center text-center gap-4">
                 {isListening ? (
-                  <p className="text-gray-600 italic">"{transcript || 'Listening...'}"</p>
+                  <p className="text-gray-600 italic">"{transcript || (lang === 'ta' ? 'கேட்கிறேன்...' : 'Listening...')}"</p>
                 ) : isProcessing ? (
                   <div className="flex flex-col items-center gap-2 text-brand-olive">
                     <Loader2 className="animate-spin" size={24} />
-                    <p className="text-sm font-medium">Processing...</p>
+                    <p className="text-sm font-medium">{lang === 'ta' ? 'செயலாக்குகிறது...' : 'Processing...'}</p>
                   </div>
                 ) : (
-                  <p className="text-gray-800 font-medium">{feedback}</p>
+                  <div className="space-y-4">
+                    <p className="text-gray-800 font-medium">{feedback}</p>
+                    {feedback.includes(lang === 'ta' ? 'மீண்டும் முயற்சிக்கவும்' : 'try again') && (
+                      <button
+                        onClick={toggleListening}
+                        className="flex items-center gap-2 px-4 py-2 bg-brand-olive text-white rounded-full text-sm font-semibold hover:bg-brand-olive/90 transition-all mx-auto"
+                      >
+                        <Mic size={16} />
+                        {lang === 'ta' ? 'மீண்டும் பேசவும்' : 'Speak Again'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
               
